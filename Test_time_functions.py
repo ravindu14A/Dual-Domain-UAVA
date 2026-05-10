@@ -15,39 +15,92 @@ def get_distance_lawnmower(R_base, R_top, H, w_arc):
     else:
         S = math.sqrt(H**2 + (R_base - R_top)**2)
         
-    num_strips = (2 * math.pi * R_base) / w_arc
+    num_strips = math.ceil((2 * math.pi * R_base) / w_arc)
     vert_dist = num_strips * S
     horiz_dist = 2 * math.pi * R_base
     
     return {"vertical": vert_dist, "horizontal": horiz_dist}
 
-def get_distance_spiral(R_base, R_top, H, w_flat):
+def get_distance_spiral(R_base, R_top, H, v_frame):
     """Calculates the continuous path distance for a spiral path."""
     if R_base == R_top:
-        return (H / w_flat) * math.sqrt((2 * math.pi * R_base)**2 + w_flat**2)
-        
+        return (H / v_frame) * math.sqrt((2 * math.pi * R_base)**2 + v_frame**2)
+
     S = math.sqrt(H**2 + (R_base - R_top)**2)
     A_lat = math.pi * (R_base + R_top) * S
-    return (A_lat / w_flat) + ((w_flat * S) / (4 * math.pi * (R_base - R_top))) * math.log(R_base / R_top)
+    return (A_lat / v_frame) + ((v_frame * S) / (4 * math.pi * (R_base - R_top))) * math.log(R_base / R_top)
 
-def get_velocity_rgb_lawnmower(v_kin, gsd_v, max_blur, shutter, h_fov, overlap, fps):
-    if shutter <= 0: return v_kin
-    return min(v_kin, (gsd_v * max_blur) / shutter, h_fov * (1.0 - overlap) * fps)
+def get_h_frame(D, h_fov_deg):
+    """Horizontal footprint of the camera frame on a flat surface."""
+    return 2 * D * math.tan(math.radians(h_fov_deg) / 2)
 
-def get_velocity_rgb_spiral(v_scan_vert, v_transit_horiz, R, w_flat, w_arc, gsd, max_blur, shutter, overlap, fps):
-    theta = math.atan(w_flat / (2 * math.pi * R))
-    v_kin_path = min(v_scan_vert / math.sin(theta), v_transit_horiz / math.cos(theta))
-    if shutter <= 0: return v_kin_path
-    v_fps = (w_arc * (1.0 - overlap) * fps) / math.cos(theta)
-    return min(v_kin_path, (gsd * max_blur) / shutter, v_fps)
+def get_v_frame(D, v_fov_deg):
+    """Vertical footprint of the camera frame on a flat surface."""
+    return 2 * D * math.tan(math.radians(v_fov_deg) / 2)
+
+def get_required_pixels(D, h_fov_deg, v_fov_deg, gsd):
+    """Returns required sensor resolution (width x height) in pixels."""
+    n_h = int(get_h_frame(D, h_fov_deg) / gsd)
+    n_v = int(get_v_frame(D, v_fov_deg) / gsd)
+    return n_h, n_v
+
+def get_w_arc(R, D, h_fov_deg, label="structure"):
+    """Calculates the true curved arc footprint of a camera on a cylinder.
+    Safely handles cases where the camera's FOV is wider than the cylinder."""
+    alpha = math.radians(h_fov_deg)
+    domain_check = ((R + D) / R) * math.sin(alpha / 2)
+
+    if domain_check <= 1.0:
+        gamma = math.asin(domain_check) - (alpha / 2)
+        w_arc = 2 * R * gamma
+    else:
+        w_arc = 2 * R * math.acos(R / (R + D))
+        print(f"Warning: Camera FOV exceeds {label} width. Capping footprint at {w_arc:.2f}m.")
+
+    return w_arc
+
+def get_velocity_rgb_lawnmower(v_vert, gsd_v, max_blur, shutter, v_frame, v_overlap, fps):
+    if shutter <= 0: return v_vert, "kinematics"
+    v_blur = (gsd_v * max_blur) / shutter
+    v_fps  = v_frame * (1.0 - v_overlap) * fps
+    candidates = {"kinematics": v_vert, "blur": v_blur, "fps/v_overlap": v_fps}
+    reason = min(candidates, key=candidates.get)
+    return candidates[reason], reason
+
+def get_velocity_rgb_spiral(v_vert, v_horiz, R, v_frame, w_arc, gsd, max_blur, shutter, h_overlap, fps):
+    theta = math.atan(v_frame / (2 * math.pi * R))
+    v_kin_vert  = v_vert / math.sin(theta)
+    v_kin_horiz = v_horiz / math.cos(theta)
+    if shutter <= 0:
+        if v_kin_vert < v_kin_horiz: return v_kin_vert, "v_kinematics"
+        return v_kin_horiz, "h_kinematics"
+    v_blur      = (gsd * max_blur) / shutter
+    v_fps_horiz = (w_arc * (1.0 - h_overlap) * fps) / math.cos(theta)
+    v_fps_vert  = (v_frame * fps) / math.sin(theta)
+    candidates = {
+        "v_kinematics": v_kin_vert, "h_kinematics": v_kin_horiz,
+        "blur": v_blur, "fps/h_overlap": v_fps_horiz, "fps/v_overlap": v_fps_vert,
+    }
+    reason = min(candidates, key=candidates.get)
+    return candidates[reason], reason
 
 def get_velocity_event(v_kin):
-    return v_kin
+    return v_kin, "kinematics"
+
+def get_velocity_event_spiral(v_vert, v_horiz, R, v_frame):
+    theta = math.atan(v_frame / (2 * math.pi * R))
+    v_kin_vert  = v_vert / math.sin(theta)
+    v_kin_horiz = v_horiz / math.cos(theta)
+    if v_kin_vert < v_kin_horiz: return v_kin_vert, "v_kinematics"
+    return v_kin_horiz, "h_kinematics"
 
 def get_velocity_hyper_lawnmower(v_kin, gsd_v, line_rate, integration_time, max_blur):
     v_sync = line_rate * gsd_v
-    if integration_time <= 0: return min(v_kin, v_sync)
-    return min(v_kin, v_sync, (gsd_v * max_blur) / integration_time)
+    candidates = {"kinematics": v_kin, "line_rate": v_sync}
+    if integration_time > 0:
+        candidates["blur"] = (gsd_v * max_blur) / integration_time
+    reason = min(candidates, key=candidates.get)
+    return candidates[reason], reason
 
 
 # --- 2. SIMPLIFIED TIME FUNCTIONS ---
@@ -63,9 +116,21 @@ def time_spiral(d_total, v_path):
 
 # --- 3. 3D VISUALIZATION MODULE ---
 
-def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config):
+def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config, cameras):
     """Generates an interactive 3D matplotlib visualization of the dual-environment flight paths."""
     H_total = H_water + H_air_cyl + H_air_cone
+
+    cw = cameras[water_config["camera_type"]]
+    v_frame_w = get_v_frame(cw["D"], cw["v_fov"]) if "v_fov" in cw else None
+    w_arc_w   = get_w_arc(R_base, cw["D"], cw["h_fov"], label="monopile")
+
+    ca = cameras[air_config["camera_type"]]
+    v_frame_a = get_v_frame(ca["D"], ca["v_fov"]) if "v_fov" in ca else None
+    w_arc_a   = get_w_arc(R_base, ca["D"], ca["h_fov"], label="tower")
+
+    ct = cameras[turbine_config["camera_type"]]
+    v_frame_t = get_v_frame(ct["D"], ct["v_fov"]) if "v_fov" in ct else None
+    w_arc_t   = get_w_arc(R_blade, ct["D"], ct["h_fov"], label="turbine blade")
     
     def get_radius(z):
         if z <= H_water + H_air_cyl:
@@ -73,12 +138,12 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
         else:
             return R_base - ((R_base - R_top) / H_air_cone) * (z - (H_water + H_air_cyl))
 
-    def get_lawnmower_coords(z_start, z_end, R_max, w_arc):
+    def get_lawnmower_coords(z_start, z_end, R_max, w_arc, theta_start=0.0):
         z_coords, theta_coords = [], []
         num_strips = int(np.ceil((2 * np.pi * R_max) / w_arc))
         d_theta = (2 * np.pi) / num_strips
-        current_theta = 0.0
-        
+        current_theta = theta_start
+
         for _ in range(num_strips):
             # Fly Up
             z_coords.extend(np.linspace(z_start, z_end, 30))
@@ -96,14 +161,14 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
             z_coords.extend([z_start] * 5)
             theta_coords.extend(np.linspace(current_theta, next_theta, 5))
             current_theta = next_theta
-            
+
         return z_coords, theta_coords
 
-    def get_spiral_coords(z_start, z_end, w_flat):
+    def get_spiral_coords(z_start, z_end, w_flat, theta_start=0.0):
         num_revs = (z_end - z_start) / w_flat
         n_points = max(int(num_revs * 100), 50)
         z_coords = np.linspace(z_start, z_end, n_points)
-        theta_coords = ((z_coords - z_start) / w_flat) * (2 * np.pi)
+        theta_coords = theta_start + ((z_coords - z_start) / w_flat) * (2 * np.pi)
         return z_coords.tolist(), theta_coords.tolist()
 
     def transform_coords(x, y, z, angle_deg, z_offset):
@@ -138,25 +203,27 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
 
     # 3. Generate & Plot Water Path
     if water_config["flight_mode"] == "lawnmower":
-        zw, tw = get_lawnmower_coords(0, H_water, R_base, water_config["w_arc"])
+        zw, tw = get_lawnmower_coords(0, H_water, R_base, w_arc_w * (1 - cw["h_overlap"]))
     else:
-        zw, tw = get_spiral_coords(0, H_water, water_config["w_flat"])
+        zw, tw = get_spiral_coords(0, H_water, v_frame_w * (1 - cw["v_overlap"]))
     rw = np.array([get_radius(z) for z in zw])
     ax.plot(rw*np.cos(tw), rw*np.sin(tw), zw, color='blue', linewidth=1.5, label=f'Water Phase ({water_config["flight_mode"]})')
 
+    theta_at_waterline = tw[-1]
+
     # 4. Generate & Plot Air Path
     if air_config["flight_mode"] == "lawnmower":
-        za, ta = get_lawnmower_coords(H_water, H_total, R_base, air_config["w_arc"])
+        za, ta = get_lawnmower_coords(H_water, H_total, R_base, w_arc_a * (1 - ca["h_overlap"]), theta_start=theta_at_waterline)
     else:
-        za, ta = get_spiral_coords(H_water, H_total, air_config["w_flat"])
+        za, ta = get_spiral_coords(H_water, H_total, v_frame_a * (1 - ca["v_overlap"]), theta_start=theta_at_waterline)
     ra = np.array([get_radius(z) for z in za])
     ax.plot(ra*np.cos(ta), ra*np.sin(ta), za, color='red', linewidth=1.5, label=f'Air Phase ({air_config["flight_mode"]})')
 
     # 5. Generate & Plot Turbine (3 Blades) Path & Surfaces
     if turbine_config["flight_mode"] == "lawnmower":
-        zb_list, tb_list = get_lawnmower_coords(0, H_blade, R_blade, turbine_config["w_arc"])
+        zb_list, tb_list = get_lawnmower_coords(0, H_blade, R_blade, w_arc_t * (1 - ct["h_overlap"]))
     else:
-        zb_list, tb_list = get_spiral_coords(0, H_blade, turbine_config["w_flat"])
+        zb_list, tb_list = get_spiral_coords(0, H_blade, v_frame_t * (1 - ct["v_overlap"]))
         
     xb_arr = R_blade * np.cos(tb_list)
     yb_arr = R_blade * np.sin(tb_list)
