@@ -34,9 +34,9 @@ def get_velocity_rgb_lawnmower(v_kin, gsd_v, max_blur, shutter, h_fov, overlap, 
     if shutter <= 0: return v_kin
     return min(v_kin, (gsd_v * max_blur) / shutter, h_fov * (1.0 - overlap) * fps)
 
-def get_velocity_rgb_spiral(v_scan_vert, v_kin_horiz, R, w_flat, w_arc, gsd, max_blur, shutter, overlap, fps):
+def get_velocity_rgb_spiral(v_scan_vert, v_transit_horiz, R, w_flat, w_arc, gsd, max_blur, shutter, overlap, fps):
     theta = math.atan(w_flat / (2 * math.pi * R))
-    v_kin_path = min(v_scan_vert / math.sin(theta), v_kin_horiz / math.cos(theta))
+    v_kin_path = min(v_scan_vert / math.sin(theta), v_transit_horiz / math.cos(theta))
     if shutter <= 0: return v_kin_path
     v_fps = (w_arc * (1.0 - overlap) * fps) / math.cos(theta)
     return min(v_kin_path, (gsd * max_blur) / shutter, v_fps)
