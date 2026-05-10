@@ -4,6 +4,7 @@
 import math
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 # --- 1. CORE GEOMETRY & VELOCITY MODULE (The "Dumb" Calculators) ---
 
@@ -98,10 +99,12 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
         return z_coords, theta_coords
 
     def get_spiral_coords(z_start, z_end, w_flat):
-        z_coords = np.linspace(z_start, z_end, int((z_end - z_start) * 20))
+        num_revs = (z_end - z_start) / w_flat
+        n_points = max(int(num_revs * 100), 50)
+        z_coords = np.linspace(z_start, z_end, n_points)
         theta_coords = ((z_coords - z_start) / w_flat) * (2 * np.pi)
         return z_coords.tolist(), theta_coords.tolist()
-        
+
     def transform_coords(x, y, z, angle_deg, z_offset):
         """Rotates coordinates around the Y-axis to orient the blades, then translates to the tower top."""
         rad = np.radians(angle_deg)
@@ -126,6 +129,11 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     x_sea, y_sea = np.meshgrid(np.linspace(-R_base*2, R_base*2, 2), np.linspace(-R_base*2, R_base*2, 2))
     z_sea = np.full(x_sea.shape, H_water)
     ax.plot_surface(x_sea, y_sea, z_sea, color='dodgerblue', alpha=0.2)
+
+    # 2b. Plot Monopile End Plane (top of cylindrical section, where cone begins)
+    x_mp, y_mp = np.meshgrid(np.linspace(-R_base*2, R_base*2, 2), np.linspace(-R_base*2, R_base*2, 2))
+    z_mp = np.full(x_mp.shape, H_water + H_air_cyl)
+    ax.plot_surface(x_mp, y_mp, z_mp, color='red', alpha=0.2)
 
     # 3. Generate & Plot Water Path
     if water_config["flight_mode"] == "lawnmower":
@@ -193,6 +201,8 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     # Create cleaner legend
     handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
+    by_label['Waterline'] = mpatches.Patch(color='dodgerblue', alpha=0.4)
+    by_label['Monopile End'] = mpatches.Patch(color='red', alpha=0.4)
     ax.legend(by_label.values(), by_label.keys())
     
     plt.tight_layout()
@@ -222,7 +232,7 @@ if __name__ == "__main__":
     
     # WATER PROFILE (Harsh lighting, high drag, biofouling)
     water_config = {
-        "camera_type": "RGB",         # Options: "RGB", "EVENT", "HYPERSPECTRAL"
+        "camera_type": "HYPERSPECTRAL",         # Options: "RGB", "EVENT", "HYPERSPECTRAL"
         "flight_mode": "lawnmower",   # Options: "lawnmower", "spiral"
         "w_arc": 0.8,                 # Small horizontal swath due to refraction/proximity
         "w_flat": 0.5,                # Small vertical pitch for spiral
@@ -237,8 +247,8 @@ if __name__ == "__main__":
     
     # AIR PROFILE (Good lighting, low drag, clean surface)
     air_config = {
-        "camera_type": "EVENT",       
-        "flight_mode": "spiral",      
+        "camera_type": "HYPERSPECTRAL",       
+        "flight_mode": "lawnmower",      
         "w_arc": 2.5,                 
         "w_flat": 1.5,                
         "v_kin_vert": 5.0,            
@@ -252,7 +262,7 @@ if __name__ == "__main__":
     
     # TURBINE PROFILE (Separate selection for the 3 blades)
     turbine_config = {
-        "camera_type": "RGB",         
+        "camera_type": "HYPERSPECTRAL",         
         "flight_mode": "lawnmower",   
         "w_arc": 2.0,                 
         "w_flat": 1.0,                
@@ -426,10 +436,12 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
         return z_coords, theta_coords
 
     def get_spiral_coords(z_start, z_end, w_flat):
-        z_coords = np.linspace(z_start, z_end, int((z_end - z_start) * 20))
+        num_revs = (z_end - z_start) / w_flat
+        n_points = max(int(num_revs * 100), 50)
+        z_coords = np.linspace(z_start, z_end, n_points)
         theta_coords = ((z_coords - z_start) / w_flat) * (2 * np.pi)
         return z_coords.tolist(), theta_coords.tolist()
-        
+
     def transform_coords(x, y, z, angle_deg, z_offset):
         """Rotates coordinates around the Y-axis to orient the blades, then translates to the tower top."""
         rad = np.radians(angle_deg)
@@ -454,6 +466,11 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     x_sea, y_sea = np.meshgrid(np.linspace(-R_base*2, R_base*2, 2), np.linspace(-R_base*2, R_base*2, 2))
     z_sea = np.full(x_sea.shape, H_water)
     ax.plot_surface(x_sea, y_sea, z_sea, color='dodgerblue', alpha=0.2)
+
+    # 2b. Plot Monopile End Plane (top of cylindrical section, where cone begins)
+    x_mp, y_mp = np.meshgrid(np.linspace(-R_base*2, R_base*2, 2), np.linspace(-R_base*2, R_base*2, 2))
+    z_mp = np.full(x_mp.shape, H_water + H_air_cyl)
+    ax.plot_surface(x_mp, y_mp, z_mp, color='red', alpha=0.2)
 
     # 3. Generate & Plot Water Path
     if water_config["flight_mode"] == "lawnmower":
@@ -521,6 +538,8 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     # Create cleaner legend
     handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
+    by_label['Waterline'] = mpatches.Patch(color='dodgerblue', alpha=0.4)
+    by_label['Monopile End'] = mpatches.Patch(color='red', alpha=0.4)
     ax.legend(by_label.values(), by_label.keys())
     
     plt.tight_layout()

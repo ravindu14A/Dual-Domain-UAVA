@@ -42,7 +42,7 @@ if __name__ == "__main__":
     # WATER PROFILE
     water_config = {
         "camera_type": "RGB",         
-        "flight_mode": "lawnmower",   
+        "flight_mode": "spiral",   
         "w_arc": 0.8,                 
         "w_flat": 0.5,                
         "v_kin_vert": 0.5,            
