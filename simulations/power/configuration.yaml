@@ -1,0 +1,51 @@
+motors: 4
+battery_capacity: 10000 # mAh
+motor_voltage: 11.1 # V
+drone:
+  weight: 15 # kg
+  drag_coefficient: 0.3
+
+motor_power_consumption:
+  - 0:
+    power: 0
+    thrust: 0 # N
+  - 10:
+    power: 100 # W
+    thrust: 10 # N
+  - 20:
+    power: 200 # W
+    thrust: 20 # N
+  - 30:
+    power: 300 # W
+    thrust: 30 # N
+  - 40:
+    power: 400 # W
+    thrust: 40 # N
+  - 50:
+    power: 500 # W
+    thrust: 50 # N
+  - 60:
+    power: 600 # W
+    thrust: 60 # N
+  - 70:
+    power: 700 # W
+    thrust: 70 # N
+  - 80:
+    power: 800 # W
+    thrust: 80 # N
+  - 90:
+    power: 900 # W
+    thrust: 90 # N
+  - 100:
+    power: 1000 # W
+    thrust: 100 # N
+
+mission_profile:
+  - time: 0 # seconds
+    action: hover
+  - time: 60 # seconds
+    action: forward_flight
+  - time: 120 # seconds
+    action: ascent
+  - time: 180 # seconds
+    action: descent
