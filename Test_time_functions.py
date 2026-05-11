@@ -59,40 +59,32 @@ def get_w_arc(R, D, h_fov_deg, label="structure"):
 
     return w_arc
 
-def get_velocity_rgb_lawnmower(v_vert, gsd_v, max_blur, shutter, v_frame, v_overlap, fps):
-    if shutter <= 0: return v_vert, "kinematics"
+def get_velocity_rgb_lawnmower(v_max, gsd_v, max_blur, shutter, v_frame, v_overlap, fps):
+    if shutter <= 0: return v_max, "kinematics"
     v_blur = (gsd_v * max_blur) / shutter
     v_fps  = v_frame * (1.0 - v_overlap) * fps
-    candidates = {"kinematics": v_vert, "blur": v_blur, "fps/v_overlap": v_fps}
+    candidates = {"kinematics": v_max, "blur": v_blur, "fps/v_overlap": v_fps}
     reason = min(candidates, key=candidates.get)
     return candidates[reason], reason
 
-def get_velocity_rgb_spiral(v_vert, v_horiz, R, v_frame, w_arc, gsd, max_blur, shutter, h_overlap, fps):
+def get_velocity_rgb_spiral(v_max, R, v_frame, w_arc, gsd, max_blur, shutter, h_overlap, fps):
     theta = math.atan(v_frame / (2 * math.pi * R))
-    v_kin_vert  = v_vert / math.sin(theta)
-    v_kin_horiz = v_horiz / math.cos(theta)
-    if shutter <= 0:
-        if v_kin_vert < v_kin_horiz: return v_kin_vert, "v_kinematics"
-        return v_kin_horiz, "h_kinematics"
+    if shutter <= 0: return v_max, "kinematics"
     v_blur      = (gsd * max_blur) / shutter
     v_fps_horiz = (w_arc * (1.0 - h_overlap) * fps) / math.cos(theta)
     v_fps_vert  = (v_frame * fps) / math.sin(theta)
     candidates = {
-        "v_kinematics": v_kin_vert, "h_kinematics": v_kin_horiz,
+        "kinematics": v_max,
         "blur": v_blur, "fps/h_overlap": v_fps_horiz, "fps/v_overlap": v_fps_vert,
     }
     reason = min(candidates, key=candidates.get)
     return candidates[reason], reason
 
-def get_velocity_event(v_kin):
-    return v_kin, "kinematics"
+def get_velocity_event(v_max):
+    return v_max, "kinematics"
 
-def get_velocity_event_spiral(v_vert, v_horiz, R, v_frame):
-    theta = math.atan(v_frame / (2 * math.pi * R))
-    v_kin_vert  = v_vert / math.sin(theta)
-    v_kin_horiz = v_horiz / math.cos(theta)
-    if v_kin_vert < v_kin_horiz: return v_kin_vert, "v_kinematics"
-    return v_kin_horiz, "h_kinematics"
+def get_velocity_event_spiral(v_max):
+    return v_max, "kinematics"
 
 def get_velocity_hyper_lawnmower(v_kin, gsd_v, line_rate, integration_time, max_blur):
     v_sync = line_rate * gsd_v

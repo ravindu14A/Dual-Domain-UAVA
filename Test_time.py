@@ -75,25 +75,22 @@ if __name__ == "__main__":
     water_config = {
         "camera_type": "HYPERSPECTRAL",
         "flight_mode": "lawnmower",
-        "v_vert": 1,
-        "v_horiz": 1,
+        "v_max": 1,
     }
 
     # AIR PROFILE
     air_config = {
         "camera_type": "HYPERSPECTRAL",
         "flight_mode": "lawnmower",
-        "v_vert": 10,
-        "v_horiz": 10,
+        "v_max": 10,
     }
 
     # TURBINE PROFILE
     turbine_config = {
         "camera_type": "HYPERSPECTRAL",
         "flight_mode": "lawnmower",
-        "v_vert": 10,
-        "v_horiz": 10,
-    }
+        "v_max": 10,
+    } 
 
     transition_penalty_seconds = 45.0
 
@@ -110,16 +107,16 @@ if __name__ == "__main__":
         dist_w = get_distance_lawnmower(R_base, R_base, H_water, w_arc_w * (1 - cw["h_overlap"]))
 
         if water_config["camera_type"] == "RGB":
-            v_vert, limit = get_velocity_rgb_lawnmower(water_config["v_vert"], cw["gsd"], cw["max_blur"], cw["shutter"], v_frame_w, cw["v_overlap"], cw["fps"])
+            v_vert, limit = get_velocity_rgb_lawnmower(water_config["v_max"], cw["gsd"], cw["max_blur"], cw["shutter"], v_frame_w, cw["v_overlap"], cw["fps"])
         elif water_config["camera_type"] == "EVENT":
-            v_vert, limit = get_velocity_event(water_config["v_vert"])
+            v_vert, limit = get_velocity_event(water_config["v_max"])
         elif water_config["camera_type"] == "HYPERSPECTRAL":
-            v_vert, limit = get_velocity_hyper_lawnmower(water_config["v_vert"], cw["gsd"], cw["line_rate"], cw["integration"], cw["max_blur"])
+            v_vert, limit = get_velocity_hyper_lawnmower(water_config["v_max"], cw["gsd"], cw["line_rate"], cw["integration"], cw["max_blur"])
 
         spacing_w  = w_arc_w * (1 - cw["h_overlap"])
         nstrips_w  = math.ceil((2 * math.pi * R_base) / spacing_w)
-        t_water = time_lawnmower(dist_w["vertical"], dist_w["horizontal"], v_vert, water_config["v_horiz"])
-        water_vel_str  = f"v_vert={v_vert:.3f} m/s [{limit}], v_horiz={water_config['v_horiz']:.3f} m/s"
+        t_water = time_lawnmower(dist_w["vertical"], dist_w["horizontal"], v_vert, water_config["v_max"])
+        water_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_max={water_config['v_max']:.3f} m/s"
         water_dist_str = f"vert={dist_w['vertical']:.1f}m, horiz={dist_w['horizontal']:.1f}m, spacing={spacing_w:.3f}m, n_strips={nstrips_w}"
 
     elif water_config["flight_mode"] == "spiral":
@@ -127,9 +124,9 @@ if __name__ == "__main__":
         dist_w = get_distance_spiral(R_base, R_base, H_water, pitch_w)
 
         if water_config["camera_type"] == "RGB":
-            v_path, limit = get_velocity_rgb_spiral(water_config["v_vert"], water_config["v_horiz"], R_base, pitch_w, w_arc_w, cw["gsd"], cw["max_blur"], cw["shutter"], cw["h_overlap"], cw["fps"])
+            v_path, limit = get_velocity_rgb_spiral(water_config["v_max"], R_base, pitch_w, w_arc_w, cw["gsd"], cw["max_blur"], cw["shutter"], cw["h_overlap"], cw["fps"])
         elif water_config["camera_type"] == "EVENT":
-            v_path, limit = get_velocity_event_spiral(water_config["v_vert"], water_config["v_horiz"], R_base, pitch_w)
+            v_path, limit = get_velocity_event_spiral(water_config["v_max"])
 
         t_water = time_spiral(dist_w, v_path)
         water_vel_str  = f"v_path={v_path:.3f} m/s [{limit}]"
@@ -151,16 +148,16 @@ if __name__ == "__main__":
         total_horiz_air = dist_air_cyl["horizontal"]
 
         if air_config["camera_type"] == "RGB":
-            v_vert, limit = get_velocity_rgb_lawnmower(air_config["v_vert"], ca["gsd"], ca["max_blur"], ca["shutter"], v_frame_a, ca["v_overlap"], ca["fps"])
+            v_vert, limit = get_velocity_rgb_lawnmower(air_config["v_max"], ca["gsd"], ca["max_blur"], ca["shutter"], v_frame_a, ca["v_overlap"], ca["fps"])
         elif air_config["camera_type"] == "EVENT":
-            v_vert, limit = get_velocity_event(air_config["v_vert"])
+            v_vert, limit = get_velocity_event(air_config["v_max"])
         elif air_config["camera_type"] == "HYPERSPECTRAL":
-            v_vert, limit = get_velocity_hyper_lawnmower(air_config["v_vert"], ca["gsd"], ca["line_rate"], ca["integration"], ca["max_blur"])
+            v_vert, limit = get_velocity_hyper_lawnmower(air_config["v_max"], ca["gsd"], ca["line_rate"], ca["integration"], ca["max_blur"])
 
         spacing_a  = w_arc_a * (1 - ca["h_overlap"])
         nstrips_a  = math.ceil((2 * math.pi * R_base) / spacing_a)
-        t_air = time_lawnmower(total_vert_air, total_horiz_air, v_vert, air_config["v_horiz"])
-        air_vel_str  = f"v_vert={v_vert:.3f} m/s [{limit}], v_horiz={air_config['v_horiz']:.3f} m/s"
+        t_air = time_lawnmower(total_vert_air, total_horiz_air, v_vert, air_config["v_max"])
+        air_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_max={air_config['v_max']:.3f} m/s"
         air_dist_str = f"vert={total_vert_air:.1f}m, horiz={total_horiz_air:.1f}m, spacing={spacing_a:.3f}m, n_strips={nstrips_a}"
 
     elif air_config["flight_mode"] == "spiral":
@@ -170,9 +167,9 @@ if __name__ == "__main__":
         total_dist_air = dist_air_cyl + dist_air_cone
 
         if air_config["camera_type"] == "RGB":
-            v_path, limit = get_velocity_rgb_spiral(air_config["v_vert"], air_config["v_horiz"], R_base, pitch_a, w_arc_a, ca["gsd"], ca["max_blur"], ca["shutter"], ca["h_overlap"], ca["fps"])
+            v_path, limit = get_velocity_rgb_spiral(air_config["v_max"], R_base, pitch_a, w_arc_a, ca["gsd"], ca["max_blur"], ca["shutter"], ca["h_overlap"], ca["fps"])
         elif air_config["camera_type"] == "EVENT":
-            v_path, limit = get_velocity_event_spiral(air_config["v_vert"], air_config["v_horiz"], R_base, pitch_a)
+            v_path, limit = get_velocity_event_spiral(air_config["v_max"])
 
         t_air = time_spiral(total_dist_air, v_path)
         air_vel_str  = f"v_path={v_path:.3f} m/s [{limit}]"
@@ -190,16 +187,16 @@ if __name__ == "__main__":
         dist_t = get_distance_lawnmower(R_blade, R_blade, H_blade, w_arc_t * (1 - ct["h_overlap"]))
 
         if turbine_config["camera_type"] == "RGB":
-            v_vert, limit = get_velocity_rgb_lawnmower(turbine_config["v_vert"], ct["gsd"], ct["max_blur"], ct["shutter"], v_frame_t, ct["v_overlap"], ct["fps"])
+            v_vert, limit = get_velocity_rgb_lawnmower(turbine_config["v_max"], ct["gsd"], ct["max_blur"], ct["shutter"], v_frame_t, ct["v_overlap"], ct["fps"])
         elif turbine_config["camera_type"] == "EVENT":
-            v_vert, limit = get_velocity_event(turbine_config["v_vert"])
+            v_vert, limit = get_velocity_event(turbine_config["v_max"])
         elif turbine_config["camera_type"] == "HYPERSPECTRAL":
-            v_vert, limit = get_velocity_hyper_lawnmower(turbine_config["v_vert"], ct["gsd"], ct["line_rate"], ct["integration"], ct["max_blur"])
+            v_vert, limit = get_velocity_hyper_lawnmower(turbine_config["v_max"], ct["gsd"], ct["line_rate"], ct["integration"], ct["max_blur"])
 
         spacing_t  = w_arc_t * (1 - ct["h_overlap"])
         nstrips_t  = math.ceil((2 * math.pi * R_blade) / spacing_t)
-        t_turbine = 3 * time_lawnmower(dist_t["vertical"], dist_t["horizontal"], v_vert, turbine_config["v_horiz"])
-        turbine_vel_str  = f"v_vert={v_vert:.3f} m/s [{limit}], v_horiz={turbine_config['v_horiz']:.3f} m/s"
+        t_turbine = 3 * time_lawnmower(dist_t["vertical"], dist_t["horizontal"], v_vert, turbine_config["v_max"])
+        turbine_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_max={turbine_config['v_max']:.3f} m/s"
         turbine_dist_str = f"vert={3*dist_t['vertical']:.1f}m, horiz={3*dist_t['horizontal']:.1f}m, spacing={spacing_t:.3f}m, n_strips={nstrips_t} (3 blades)"
 
     elif turbine_config["flight_mode"] == "spiral":
@@ -207,9 +204,9 @@ if __name__ == "__main__":
         dist_t = get_distance_spiral(R_blade, R_blade, H_blade, pitch_t)
 
         if turbine_config["camera_type"] == "RGB":
-            v_path, limit = get_velocity_rgb_spiral(turbine_config["v_vert"], turbine_config["v_horiz"], R_blade, pitch_t, w_arc_t, ct["gsd"], ct["max_blur"], ct["shutter"], ct["h_overlap"], ct["fps"])
+            v_path, limit = get_velocity_rgb_spiral(turbine_config["v_max"], R_blade, pitch_t, w_arc_t, ct["gsd"], ct["max_blur"], ct["shutter"], ct["h_overlap"], ct["fps"])
         elif turbine_config["camera_type"] == "EVENT":
-            v_path, limit = get_velocity_event_spiral(turbine_config["v_vert"], turbine_config["v_horiz"], R_blade, pitch_t)
+            v_path, limit = get_velocity_event_spiral(turbine_config["v_max"])
 
         t_turbine = 3 * time_spiral(dist_t, v_path)
         turbine_vel_str  = f"v_path={v_path:.3f} m/s [{limit}]"
