@@ -1,418 +1,544 @@
-"""
-Trade-off matrix — 5 design options
-Options: 1=Fixed wing VTOL, 2=Moving wing VTOL, 3=Rotary wing,
-         4=Biomimetics, 5=Detachable
-
-Scores:  0=Unfeasible, 1=Fixable deficiencies,
-         2=Meets requirements, 3=Exceeds requirements
-
-Total score per option = Σ_c (W_c/100) * Σ_s (w_s/100 * score_s)   →  0–3 scale
-"""
-
-import math
-import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from adjustText import adjust_text
+import numpy as np
 
-# ── Sensitivity margins (change these to explore different assumptions) ──────
-WEIGHT_MARGIN = 10   # ±pp variation on each criterion weight
-#   Justification: reflects the typical spread in team member weight preferences;
-#   10 pp is also a conventional starting point for first-order robustness checks.
-SCORE_MARGIN  = 1    # ±1 score perturbation per sub-criterion
-#   Justification: scores are discrete integers 0–3; ±1 is the smallest
-#   meaningful perturbation and reflects realistic scoring disagreement.
-# ─────────────────────────────────────────────────────────────────────────────
+# ==========================================
+# 0. Global Parameters
+# ==========================================
+# Defines the +/- percentage sweep range for the visual line graphs (e.g., 20 means +/- 20%)
+SENSITIVITY_SWEEP_PERCENT = 20
 
-OPTIONS = [
-    "Fixed wing VTOL",
-    "Moving wing VTOL",
-    "Rotary wing",
-    "Biomimetics",
-    "Detachable",
+# ==========================================
+# 1. Binary Compatibility Matrix (from whiteboard)
+# ==========================================
+propulsion_types = ["Hydrojet", "Propellers", "Voith-Schneider prop", "Biomimetics"]
+vehicle_types = ["Fixed wing VTOL", "Moving wing VTOL", "Bicopter", "Tricopter", "Quad+ copter"]
+
+binary_data = [
+    [1, 1, 1, 1, 1],  # Hydrojet
+    [1, 1, 1, 1, 1],  # Propellers
+    [0, 0, 1, 1, 1],  # Voith-Schneider prop
+    [0, 0, 0, 1, 1]   # Biomimetics
 ]
 
-CRITERIA = {
-    "Performance": {
-        "weight": 40,
-        "sub": {
-            "Mass":                       (15, [2, 2, 3, 1, 1]),
-            "Aerial manoeuvrability":     (10, [1, 2, 3, 2, 3]),
-            "Underwater manoeuvrability": (10, [1, 2, 3, 3, 3]),
-            "Endurance":                  (15, [3, 3, 2, 2, 1]),
-            "Damage tolerance":           (10, [2, 2, 2, 2, 3]),
-            "Aerial efficiency":          (10, [2, 2, 3, 2, 3]),
-            "Underwater efficiency":      ( 5, [1, 2, 2, 3, 3]),
-            "Payload":                    ( 5, [2, 2, 2, 2, 1]),
-            "Transition performance":     ( 5, [1, 3, 3, 3, 3]),
-            "Stability":                  (15, [2, 3, 1, 3, 3]),
-        },
-    },
-    "Cost": {
-        "weight": 30,
-        "sub": {
-            "Capex":       (25, [3, 2, 2, 1, 1]),
-            "Opex":        (45, [1, 2, 2, 2, 1]),
-            "Maintenance": (30, [2, 2, 2, 1, 1]),
-        },
-    },
-    "Risk": {
-        "weight": 20,
-        "sub": {
-            "Complexity":    (40, [2, 2, 3, 1, 3]),
-            "Project risk":  (30, [2, 2, 2, 1, 3]),
-            "Manufacturing": (30, [2, 2, 2, 2, 3]),
-        },
-    },
-    "Sustainability": {
-        "weight": 10,
-        "sub": {
-            "Noise":              (50, [1, 2, 2, 3, 2]),
-            "Marine life impact": (50, [2, 2, 2, 3, 2]),
-        },
-    },
+binary_compatibility_matrix = pd.DataFrame(binary_data, index=propulsion_types, columns=vehicle_types)
+
+# ==========================================
+# 2. AERIAL Concept Evaluation Matrix (Dynamic)
+# ==========================================
+aerial_criteria = ["Performance", "Cost", "Risk", "Mass"]
+aerial_columns = ["Weight", "Fixed wing VTOL", "Moving wing VTOL", "Bicopter", "Tricopter", "Quad+ copter"]
+
+aerial_raw_data = [
+    [40, 1, 3, 2, 2, 3], # Performance
+    [25, 2, 1, 2, 2, 2], # Cost
+    [20, 2, 1, 2, 2, 3], # Risk
+    [15, 2, 2, 3, 3, 3]  # Mass
+]
+
+aerial_matrix = pd.DataFrame(aerial_raw_data, index=aerial_criteria, columns=aerial_columns)
+
+aerial_weights = aerial_matrix["Weight"] / 100
+aerial_vehicle_cols = aerial_matrix.columns[1:]
+aerial_total_scores = aerial_matrix[aerial_vehicle_cols].multiply(aerial_weights, axis=0).sum()
+
+aerial_matrix.loc["Total score"] = pd.concat([pd.Series({"Weight": ""}), aerial_total_scores])
+
+# ==========================================
+# 3. AQUATIC Concept Evaluation Matrix (Dynamic)
+# ==========================================
+aquatic_criteria = ["Performance", "Cost", "Risk", "Mass"]
+aquatic_columns = ["Weight", "Biomimetics", "Hydrojet", "Propellers", "Voith-Schneider prop"]
+
+aquatic_raw_data = [
+    [40, 3, 2, 2, 3], # Performance
+    [25, 1, 2, 3, 2], # Cost
+    [20, 1, 2, 2, 1], # Risk
+    [15, 1, 1, 2, 2]  # Mass
+]
+
+aquatic_matrix = pd.DataFrame(aquatic_raw_data, index=aquatic_criteria, columns=aquatic_columns)
+
+aquatic_weights = aquatic_matrix["Weight"] / 100
+aquatic_propulsion_cols = aquatic_matrix.columns[1:]
+aquatic_total_scores = aquatic_matrix[aquatic_propulsion_cols].multiply(aquatic_weights, axis=0).sum()
+
+aquatic_matrix.loc["Total score"] = pd.concat([pd.Series({"Weight": ""}), aquatic_total_scores])
+
+# ==========================================
+# 4. Weighted Compatibility Matrix (Dynamic)
+# ==========================================
+weighted_compat_rows = ["Biomimetics", "Hydrojet", "Propellers", "Voith-Schneider prop"]
+weighted_compat_cols = ["Fixed wing VTOL", "Moving wing VTOL", "Bicopter", "Tricopter", "Quad+ copter"]
+
+weighted_compatibility_matrix = pd.DataFrame(index=weighted_compat_rows, columns=weighted_compat_cols)
+
+for propulsion in weighted_compat_rows:
+    for vehicle in weighted_compat_cols:
+        aquatic_score = aquatic_matrix.loc["Total score", propulsion]
+        aerial_score = aerial_matrix.loc["Total score", vehicle]
+        weighted_compatibility_matrix.loc[propulsion, vehicle] = (aquatic_score + aerial_score) / 2
+
+weighted_compatibility_matrix = weighted_compatibility_matrix.astype(float)
+
+# ==========================================
+# 5. Filter and Rank Compatible Combinations
+# ==========================================
+binary_matrix_aligned = binary_compatibility_matrix.reindex(index=weighted_compat_rows)
+valid_combos = []
+
+for propulsion in weighted_compat_rows:
+    for vehicle in weighted_compat_cols:
+        is_compatible = binary_matrix_aligned.loc[propulsion, vehicle]
+        if is_compatible == 1:
+            score = weighted_compatibility_matrix.loc[propulsion, vehicle]
+            valid_combos.append({
+                "Propulsion": propulsion,
+                "Vehicle": vehicle,
+                "Score": score
+            })
+
+results_df = pd.DataFrame(valid_combos)
+ranked_results = results_df.sort_values(by="Score", ascending=False).reset_index(drop=True)
+ranked_results.index = ranked_results.index + 1
+top_6_results = ranked_results.head(6)
+
+# ==========================================
+# 6. Final Trade-off Matrix (Dynamically Linked)
+# ==========================================
+concept_names = {}
+concept_cols = []
+
+for index, row in top_6_results.iterrows():
+    name = f"{row['Vehicle']} & {row['Propulsion']}"
+    str_index = str(index)
+    concept_names[str_index] = name
+    concept_cols.append(str_index)
+
+main_weights = {
+    "Performance": 40,
+    "Cost": 30,
+    "Risk": 20,
+    "Sustainability": 10
 }
 
-COLORS = ['#e41a1c', '#377eb8', '#4daf4a', '#ff7f00', '#984ea3']
-CRIT_COLORS = {'Performance': '#1f77b4', 'Cost': '#ff7f0e',
-               'Risk': '#2ca02c', 'Sustainability': '#d62728'}
+raw_tradeoff_data = [
+    ["Performance", "Mass", 20, 3, 2, 2, 1, 3, 3],
+    ["Performance", "Aerial manoeuvrability", 10, 3, 3, 3, 2, 2, 1],
+    ["Performance", "Underwater manoeuvrability", 10, 2, 2, 1, 3, 2, 2],
+    ["Performance", "Endurance", 0, 0, 0, 0, 0, 0, 0], 
+    ["Performance", "Damage tolerance", 10, 2, 2, 2, 3, 1, 1],
+    ["Performance", "Aerial efficiency (hover)", 15, 2, 2, 2, 2, 3, 3],
+    ["Performance", "Underwater efficiency", 10, 2, 3, 1, 3, 2, 2],
+    ["Performance", "Payload", 5, 3, 2, 1, 1, 3, 3],
+    ["Performance", "Transition performance", 5, 2, 2, 1, 2, 2, 2],
+    ["Performance", "Stability", 15, 3, 3, 2, 3, 2, 1],
 
-# ── Core calculation ─────────────────────────────────────────────────────────
+    ["Cost", "CAPEX", 40, 3, 2, 1, 1, 2, 2],
+    ["Cost", "OPEX", 60, 3, 3, 2, 1, 3, 3],
+    ["Cost", "Maintenance", 0, 0, 0, 0, 0, 0, 0],
 
-def _sub_scores(crit_data):
-    """Return per-option weighted sub-scores for one criterion (not yet * W_c)."""
-    n = len(OPTIONS)
-    scores = [0.0] * n
-    for _, (w, raw) in crit_data["sub"].items():
-        for i in range(n):
-            scores[i] += (w / 100) * raw[i]
-    return scores
+    ["Risk", "Complexity", 40, 3, 2, 2, 1, 2, 2],
+    ["Risk", "Project risk", 30, 3, 2, 1, 1, 3, 3],
+    ["Risk", "Manufacturing", 30, 3, 3, 2, 1, 3, 3],
+
+    ["Sustainability", "Noise", 50, 1, 2, 1, 2, 3, 3],
+    ["Sustainability", "Marine life impact", 50, 2, 2, 3, 3, 2, 2]
+]
+
+tradeoff_columns = ["Main Criteria", "Subcriteria", "Weight"] + concept_cols
+tradeoff_df = pd.DataFrame(raw_tradeoff_data, columns=tradeoff_columns)
+
+main_scores_data = []
+grouped = tradeoff_df.groupby("Main Criteria", sort=False)
+
+for main_criteria, group in grouped:
+    sub_weights = group["Weight"] / 100
+    concept_scores = group[concept_cols].multiply(sub_weights, axis=0).sum()
+    
+    row = {"Criteria": main_criteria, "Weight": main_weights[main_criteria]}
+    row.update(concept_scores.to_dict())
+    main_scores_data.append(row)
+
+main_scores_df = pd.DataFrame(main_scores_data).set_index("Criteria")
+
+main_weight_pct = main_scores_df["Weight"] / 100
+final_total_scores = main_scores_df[concept_cols].multiply(main_weight_pct, axis=0).sum()
+
+total_row = {"Weight": ""}
+total_row.update(final_total_scores.to_dict())
+main_scores_df.loc["Total score"] = total_row
+
+final_display_df = main_scores_df.rename(columns=concept_names)
+actual_concept_names_list = list(concept_names.values())
 
 
-def calculate(weight_overrides=None):
-    """
-    Return list of total scores, one per option.
-    weight_overrides: dict {criterion: weight_percent} – defaults to CRITERIA weights.
-    """
-    if weight_overrides is None:
-        weight_overrides = {c: CRITERIA[c]["weight"] for c in CRITERIA}
-    totals = [0.0] * len(OPTIONS)
-    for crit, data in CRITERIA.items():
-        W = weight_overrides[crit] / 100
-        for i, s in enumerate(_sub_scores(data)):
-            totals[i] += W * s
-    return totals
+# ==========================================
+# 7. Ultimate Trade-off Ranking
+# ==========================================
+final_ranking_data = []
+for col in concept_cols:
+    final_ranking_data.append({
+        "Concept": concept_names[col],
+        "Final Score": final_total_scores[col]
+    })
+
+final_ranking_df = pd.DataFrame(final_ranking_data)
+final_ranking_df = final_ranking_df.sort_values(by="Final Score", ascending=False).reset_index(drop=True)
+final_ranking_df.index = final_ranking_df.index + 1
 
 
-def _redistribute(varied_crit, new_w):
-    """Set varied_crit to new_w; redistribute remainder proportionally to others."""
-    base = {c: CRITERIA[c]["weight"] for c in CRITERIA}
-    others_total = sum(w for c, w in base.items() if c != varied_crit)
-    remaining = 100.0 - new_w
-    result = {varied_crit: new_w}
-    for c, w in base.items():
-        if c != varied_crit:
-            result[c] = remaining * w / others_total
-    return result
+# ==========================================
+# 8. Visual Sensitivity Analysis (Matplotlib)
+# ==========================================
 
-# ── Print report ─────────────────────────────────────────────────────────────
+def plot_initial_tradeoff_sensitivity(aerial_df, aquatic_df, valid_combos_df, sweep_pct):
+    aerial_base_w = aerial_df.drop("Total score")["Weight"].astype(float)
+    aquatic_base_w = aquatic_df.drop("Total score")["Weight"].astype(float)
+    
+    aerial_scores = aerial_df.drop("Total score")[aerial_vehicle_cols].astype(float)
+    aquatic_scores = aquatic_df.drop("Total score")[aquatic_propulsion_cols].astype(float)
+    
+    base_aq_totals = aquatic_scores.multiply(aquatic_base_w / 100, axis=0).sum()
+    base_ae_totals = aerial_scores.multiply(aerial_base_w / 100, axis=0).sum()
+    
+    combo_names = [f"{row['Vehicle']} & {row['Propulsion']}" for _, row in valid_combos_df.iterrows()]
+    
+    fig, axes = plt.subplots(2, 4, figsize=(22, 11))
+    fig.suptitle(f"Sensitivity Analysis: Initial Aerial & Aquatic Trade-offs (+/- {sweep_pct}%)", fontsize=18, fontweight='bold')
+    
+    colors = plt.cm.tab20(np.linspace(0, 1, len(combo_names)))
+    color_map = {name: color for name, color in zip(combo_names, colors)}
 
-def print_report():
-    totals = calculate()
-    col_w = 22
-    header = f"{'Criterion':<20}" + "".join(f"{o:>{col_w}}" for o in OPTIONS)
-    sep = "=" * len(header)
-    print(sep)
-    print("TRADE-OFF RESULTS  (score 0–3 scale)")
-    print(sep)
-    print(header)
-    print("-" * len(header))
-    for crit, data in CRITERIA.items():
-        sub   = _sub_scores(data)
-        W     = data["weight"] / 100
-        label = crit + " (w=" + str(data["weight"]) + "%)"
-        row   = f"{label:<20}" + "".join(f"{W*s:>{col_w}.3f}" for s in sub)
-        print(row)
-    print("-" * len(header))
-    print(f"{'TOTAL':<20}" + "".join(f"{t:>{col_w}.3f}" for t in totals))
-    print(sep)
-    ranked = sorted(enumerate(totals), key=lambda x: x[1], reverse=True)
-    print("\nRANKING:")
-    for rank, (i, score) in enumerate(ranked, 1):
-        print(f"  {rank}. {OPTIONS[i]:<25}  {score:.3f}")
-
-# ── Figure 1: Weight sweep ────────────────────────────────────────────────────
-
-def plot_weight_sweep():
-    crits = list(CRITERIA.keys())
-    baseline = calculate()
-    winner_idx = baseline.index(max(baseline))
-
-    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
-    axes = axes.flatten()
-
-    for ax, crit in zip(axes, crits):
-        base_w  = CRITERIA[crit]["weight"]
-        w_range = np.linspace(max(1, base_w - WEIGHT_MARGIN),
-                              min(99, base_w + WEIGHT_MARGIN), 200)
-
-        matrix = np.zeros((len(OPTIONS), len(w_range)))
-        for j, w in enumerate(w_range):
-            s = calculate(_redistribute(crit, w))
-            for i in range(len(OPTIONS)):
-                matrix[i, j] = s[i]
-
-        # shade regions where the winner changes
-        current_winner = np.argmax(matrix, axis=0)
-        for j in range(len(w_range) - 1):
-            if current_winner[j] != winner_idx:
-                ax.axvspan(w_range[j], w_range[j+1], color='lightyellow', alpha=0.6)
-
-        for i, (opt, col) in enumerate(zip(OPTIONS, COLORS)):
-            lw = 2.5 if i == winner_idx else 1.2
-            ls = '-'  if i == winner_idx else '--'
-            ax.plot(w_range, matrix[i], color=col, lw=lw, ls=ls, label=opt)
-
-        ax.axvline(base_w, color='black', lw=1.2, ls=':', label='Baseline')
-        ax.set_title(f'{crit}  (baseline = {base_w}%)', fontweight='bold')
-        ax.set_xlabel(f'{crit} weight (%)')
-        ax.set_ylabel('Total score')
-        ax.set_xlim(w_range[0], w_range[-1])
-        ax.grid(True, alpha=0.25)
-
-    handles = [plt.Line2D([0],[0], color=c, lw=2, label=o)
-               for o, c in zip(OPTIONS, COLORS)]
-    handles += [plt.Line2D([0],[0], color='black', lw=1.2, ls=':', label='Baseline'),
-                mpatches.Patch(color='lightyellow', label='Rank change region')]
-    fig.legend(handles=handles, loc='lower center', ncol=4, fontsize=9,
-               bbox_to_anchor=(0.5, 0.0))
-    fig.suptitle(f'Sensitivity Analysis — Criterion Weight Variation  (±{WEIGHT_MARGIN} pp)',
-                 fontsize=13, fontweight='bold')
-    plt.tight_layout(rect=[0, 0.1, 1, 1])
-    #plt.savefig('sensitivity_weights.png', dpi=150, bbox_inches='tight')
-    plt.show()
-
-# ── Figure 2: Criterion elimination ──────────────────────────────────────────
-
-def plot_elimination():
-    baseline = calculate()
-
-    scenarios      = {'Baseline': baseline}
-    scenario_labels = ['Baseline']
-    for crit in CRITERIA:
-        others_total = sum(CRITERIA[c]["weight"] for c in CRITERIA if c != crit)
-        overrides = {c: (CRITERIA[c]["weight"] / others_total * 100 if c != crit else 0.0)
-                     for c in CRITERIA}
-        scenarios[f'No\n{crit}'] = calculate(overrides)
-        scenario_labels.append(f'No\n{crit}')
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    n_sc  = len(scenarios)
-    n_opt = len(OPTIONS)
-    x     = np.arange(n_sc)
-    width = 0.14
-    offsets = (np.arange(n_opt) - (n_opt - 1) / 2) * width
-
-    for i, (opt, col) in enumerate(zip(OPTIONS, COLORS)):
-        vals = [s[i] for s in scenarios.values()]
-        ax.bar(x + offsets[i], vals, width, label=opt, color=col, alpha=0.85,
-               edgecolor='white', linewidth=0.5)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(scenario_labels, fontsize=10)
-    ax.axvline(0.5, color='gray', ls=':', lw=1)
-    ax.set_ylabel('Total score')
-    ax.set_title('Criterion Elimination Sensitivity\n'
-                 '(eliminated criterion weight redistributed proportionally)',
-                 fontweight='bold')
-    ax.legend(ncol=5, fontsize=9, loc='lower right')
-    ax.grid(True, axis='y', alpha=0.25)
-    plt.tight_layout()
-    #plt.savefig('sensitivity_elimination.png', dpi=150, bbox_inches='tight')
-    plt.show()
-
-# ── Figure 3: Score risk map ──────────────────────────────────────────────────
-
-def plot_score_risk():
-    """
-    Scatter plot: x = weight impact of sub-criterion (how much 1 score point moves total),
-                  y = score gap between winner and runner-up on that sub-criterion.
-    Bottom-right = high impact, small gap → most at risk of changing the outcome.
-    """
-    baseline   = calculate()
-    sorted_idx = sorted(range(len(OPTIONS)), key=lambda i: baseline[i], reverse=True)
-    winner     = sorted_idx[0]
-    runner_up  = sorted_idx[1]
-
-    impacts, gaps, labels, colors = [], [], [], []
-    for crit, data in CRITERIA.items():
-        W = data["weight"] / 100
-        for sub_name, (w, raw) in data["sub"].items():
-            impact = W * (w / 100)           # score-point → total-score sensitivity
-            gap    = raw[winner] - raw[runner_up]   # positive = winner leads here
-            impacts.append(impact * 100)     # express as % of total score per point
-            gaps.append(gap)
-            labels.append(sub_name)
-            colors.append(CRIT_COLORS[crit])
-
-    fig, ax = plt.subplots(figsize=(12, 8))
-    texts = []
-    for x, y, lbl, col in zip(impacts, gaps, labels, colors):
-        ax.scatter(x, y, color=col, s=120, zorder=3, edgecolors='white', linewidth=0.5)
-        texts.append(ax.text(x, y, lbl, fontsize=8))
-    adjust_text(texts, ax=ax,
-                arrowprops=dict(arrowstyle='-', color='gray', lw=0.6),
-                expand=(1.3, 1.5), force_text=(0.5, 0.8))
-
-    ax.axhline(0, color='gray', lw=0.8, ls='--')
-    ax.axvline(np.percentile(impacts, 66), color='red', lw=0.8, ls=':',
-               label='Top-33% impact threshold')
-
-    # quadrant labels
-    ax.text(0.98, 0.98, 'Winner leads,\nhigh impact', transform=ax.transAxes,
-            ha='right', va='top', color='green', fontsize=8, alpha=0.7)
-    ax.text(0.98, 0.02, 'Runner-up leads,\nhigh impact', transform=ax.transAxes,
-            ha='right', va='bottom', color='red', fontsize=8, alpha=0.7)
-
-    # legend for criteria colours
-    legend_patches = [mpatches.Patch(color=c, label=k)
-                      for k, c in CRIT_COLORS.items()]
-    ax.legend(handles=legend_patches + [
-        plt.Line2D([0],[0], color='red', ls=':', lw=1, label='Top-33% impact')],
-              fontsize=9, loc='upper left')
-
-    ax.set_xlabel(f'Weight impact  (total-score change per ±{SCORE_MARGIN} score point,  %)')
-    ax.set_ylabel(f'Score gap  (winner − runner-up)\n'
-                  f'[{OPTIONS[winner]} vs {OPTIONS[runner_up]}]')
-    ax.set_title('Score Risk Map — Sub-criterion Sensitivity\n'
-                 'Bottom-right: high impact AND small/negative gap → most vulnerable',
-                 fontweight='bold')
-    ax.grid(True, alpha=0.2)
-    plt.tight_layout()
-    #plt.savefig('sensitivity_score_risk.png', dpi=150, bbox_inches='tight')
-    plt.show()
-
-# ── Figure 4: Score perturbation ─────────────────────────────────────────────
-
-def _calculate_with_score_delta(crit_name, sub_name, delta):
-    """Recompute totals with one sub-criterion's scores shifted by delta (clamped 0-3)."""
-    n = len(OPTIONS)
-    totals = [0.0] * n
-    for crit, data in CRITERIA.items():
-        W = data["weight"] / 100
-        for sname, (w, raw) in data["sub"].items():
-            if crit == crit_name and sname == sub_name:
-                scores = [min(3, max(0, r + delta)) for r in raw]
+    for i, target_crit in enumerate(aerial_base_w.index):
+        ax = axes[0, i]
+        w_base = aerial_base_w[target_crit]
+        min_w = max(0.0, w_base - sweep_pct)
+        max_w = min(100.0, w_base + sweep_pct)
+        weight_range = np.linspace(min_w, max_w, 100)
+        
+        simulated_scores = {name: [] for name in combo_names}
+        
+        for w_target in weight_range:
+            new_w = aerial_base_w.copy()
+            new_w[target_crit] = w_target
+            diff = w_target - w_base
+            other_sum = 100.0 - w_base
+            
+            if other_sum > 0:
+                for ocrit in new_w.index:
+                    if ocrit != target_crit:
+                        new_w[ocrit] -= diff * (aerial_base_w[ocrit] / other_sum)
             else:
-                scores = raw
-            for i in range(n):
-                totals[i] += W * (w / 100) * scores[i]
-    return totals
+                for ocrit in new_w.index:
+                    if ocrit != target_crit:
+                        new_w[ocrit] = (100.0 - w_target) / (len(new_w) - 1)
+                        
+            new_ae_totals = aerial_scores.multiply(new_w / 100, axis=0).sum()
+            
+            for _, row in valid_combos_df.iterrows():
+                veh, prop = row['Vehicle'], row['Propulsion']
+                name = f"{veh} & {prop}"
+                score = (new_ae_totals[veh] + base_aq_totals[prop]) / 2
+                simulated_scores[name].append(score)
+                
+        for name in combo_names:
+            ax.plot(weight_range, simulated_scores[name], color=color_map[name], linewidth=2)
+            
+        ax.axvline(x=w_base, color='black', linestyle=':', alpha=0.7)
+        ax.set_title(f"Aerial: {target_crit}")
+        ax.set_xlabel(f"Weight (%)")
+        ax.set_ylabel("Combined Score")
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(min_w, max_w)
 
+    for i, target_crit in enumerate(aquatic_base_w.index):
+        ax = axes[1, i]
+        w_base = aquatic_base_w[target_crit]
+        min_w = max(0.0, w_base - sweep_pct)
+        max_w = min(100.0, w_base + sweep_pct)
+        weight_range = np.linspace(min_w, max_w, 100)
+        
+        simulated_scores = {name: [] for name in combo_names}
+        
+        for w_target in weight_range:
+            new_w = aquatic_base_w.copy()
+            new_w[target_crit] = w_target
+            diff = w_target - w_base
+            other_sum = 100.0 - w_base
+            
+            if other_sum > 0:
+                for ocrit in new_w.index:
+                    if ocrit != target_crit:
+                        new_w[ocrit] -= diff * (aquatic_base_w[ocrit] / other_sum)
+            else:
+                for ocrit in new_w.index:
+                    if ocrit != target_crit:
+                        new_w[ocrit] = (100.0 - w_target) / (len(new_w) - 1)
+                        
+            new_aq_totals = aquatic_scores.multiply(new_w / 100, axis=0).sum()
+            
+            for _, row in valid_combos_df.iterrows():
+                veh, prop = row['Vehicle'], row['Propulsion']
+                name = f"{veh} & {prop}"
+                score = (base_ae_totals[veh] + new_aq_totals[prop]) / 2
+                simulated_scores[name].append(score)
+                
+        for name in combo_names:
+            ax.plot(weight_range, simulated_scores[name], label=name, color=color_map[name], linewidth=2)
+            
+        ax.axvline(x=w_base, color='black', linestyle=':', alpha=0.7)
+        ax.set_title(f"Aquatic: {target_crit}")
+        ax.set_xlabel(f"Weight (%)")
+        ax.set_ylabel("Combined Score")
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(min_w, max_w)
 
-def plot_score_perturbation():
-    """
-    For each sub-criterion, shift all scores by +SCORE_MARGIN and -SCORE_MARGIN,
-    recompute totals, and track the min/max range reached per option.
-    Plot as a range band around the baseline — if the winner's lower bound
-    overlaps the runner-up's upper bound, the result is not robust.
-    Also print which individual perturbations flip the ranking.
-    """
-    baseline   = calculate()
-    sorted_idx = sorted(range(len(OPTIONS)), key=lambda i: baseline[i], reverse=True)
-    winner     = sorted_idx[0]
-    runner_up  = sorted_idx[1]
-
-    # Accumulate min/max per option across all single sub-criterion perturbations
-    lo = baseline[:]
-    hi = baseline[:]
-    flips = []   # (sub-criterion label, delta, new totals)
-
-    for crit, data in CRITERIA.items():
-        for sub_name in data["sub"]:
-            for delta in (+SCORE_MARGIN, -SCORE_MARGIN):
-                new_totals = _calculate_with_score_delta(crit, sub_name, delta)
-                for i in range(len(OPTIONS)):
-                    lo[i] = min(lo[i], new_totals[i])
-                    hi[i] = max(hi[i], new_totals[i])
-                new_winner = new_totals.index(max(new_totals))
-                if new_winner != winner:
-                    flips.append((crit, sub_name, delta, new_totals))
-
-    # ── Print flip summary ──────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("SCORE PERTURBATION — RANKING FLIPS")
-    print("=" * 60)
-    if not flips:
-        print("No single ±1 score change flips the winner.")
-    else:
-        for crit, sub_name, delta, tots in flips:
-            new_w = tots.index(max(tots))
-            sign  = "+" if delta > 0 else ""
-            print(f"  [{crit}] {sub_name}  ({sign}{delta})  "
-                  f"-> new winner: {OPTIONS[new_w]}  "
-                  f"(was {OPTIONS[winner]})")
-
-    # ── Plot ───────────────────────────────────────────────────────────────
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    # Left: range band per option
-    ax = axes[0]
-    x  = np.arange(len(OPTIONS))
-    for i, (opt, col) in enumerate(zip(OPTIONS, COLORS)):
-        ax.bar(x[i], baseline[i], color=col, alpha=0.85, label=opt, zorder=3)
-        ax.errorbar(x[i], (hi[i] + lo[i]) / 2,
-                    yerr=[[(hi[i] + lo[i]) / 2 - lo[i]],
-                          [hi[i] - (hi[i] + lo[i]) / 2]],
-                    fmt='none', color='black', capsize=6, lw=2, zorder=4)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels([o.replace(' ', '\n') for o in OPTIONS], fontsize=8)
-    ax.set_ylabel('Total score')
-    ax.set_title(f'Score range across all single\nsub-criterion ±{SCORE_MARGIN} perturbations',
-                 fontweight='bold')
-    ax.grid(True, axis='y', alpha=0.25)
-    ax.legend(fontsize=8)
-
-    # Right: per-sub-criterion delta on winner vs runner-up
-    ax2 = axes[1]
-    sub_labels, w_deltas, ru_deltas, bar_colors = [], [], [], []
-
-    for crit, data in CRITERIA.items():
-        for sub_name in data["sub"]:
-            down = _calculate_with_score_delta(crit, sub_name, -SCORE_MARGIN)
-            up   = _calculate_with_score_delta(crit, sub_name, +SCORE_MARGIN)
-            w_deltas.append(down[winner]   - baseline[winner])    # pessimistic for winner
-            ru_deltas.append(up[runner_up] - baseline[runner_up]) # optimistic for runner-up
-            sub_labels.append(f"{crit[:4]}. {sub_name}")
-            bar_colors.append(CRIT_COLORS[crit])
-
-    y = np.arange(len(sub_labels))
-    ax2.barh(y - 0.2, w_deltas,  0.35, color=COLORS[winner],   alpha=0.8,
-             label=f'{OPTIONS[winner]} (score -1)')
-    ax2.barh(y + 0.2, ru_deltas, 0.35, color=COLORS[runner_up], alpha=0.8,
-             label=f'{OPTIONS[runner_up]} (score +1)')
-    ax2.axvline(0, color='black', lw=0.8)
-    ax2.set_yticks(y)
-    ax2.set_yticklabels(sub_labels, fontsize=7.5)
-    ax2.set_xlabel('Change in total score')
-    ax2.set_title(f'Worst case for winner vs best case\nfor runner-up, per sub-criterion',
-                  fontweight='bold')
-    ax2.legend(fontsize=8)
-    ax2.grid(True, axis='x', alpha=0.25)
-
-    fig.suptitle(f'Score Sensitivity — Actual ±{SCORE_MARGIN} Score Perturbations',
-                 fontsize=13, fontweight='bold')
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.98, 0.5), fontsize=10, title="Combinations (Top down by baseline score)")
+    
     plt.tight_layout()
-    #plt.savefig('sensitivity_score_perturb.png', dpi=150, bbox_inches='tight')
-    plt.show()
+    plt.subplots_adjust(right=0.83, top=0.90) 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+def plot_initial_criteria_removal_bars(aerial_df, aquatic_df, top_combos_df):
+    """
+    Generates side-by-side grouped bar charts for the initial matrices,
+    showing how the Top 6 Combinations react when criteria are removed.
+    """
+    aerial_base_w = aerial_df.drop("Total score")["Weight"].astype(float)
+    aquatic_base_w = aquatic_df.drop("Total score")["Weight"].astype(float)
+    
+    aerial_scores = aerial_df.drop("Total score")[aerial_vehicle_cols].astype(float)
+    aquatic_scores = aquatic_df.drop("Total score")[aquatic_propulsion_cols].astype(float)
+    
+    base_aq_totals = aquatic_scores.multiply(aquatic_base_w / 100, axis=0).sum()
+    base_ae_totals = aerial_scores.multiply(aerial_base_w / 100, axis=0).sum()
+    
+    combo_names = [f"{row['Vehicle']} & {row['Propulsion']}" for _, row in top_combos_df.iterrows()]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    fig.suptitle('Impact of Eliminating Individual Criteria (Initial Trade-offs)', fontsize=18, fontweight='bold')
+    
+    num_concepts = len(combo_names)
+    width = 0.12
+    offsets = np.linspace(-width*(num_concepts-1)/2, width*(num_concepts-1)/2, num_concepts)
+    
+    # --- Subplot 1: Aerial Removals ---
+    ax1 = axes[0]
+    scenarios_ae = ["Baseline"] + [f"No {crit}" for crit in aerial_base_w.index]
+    scores_ae = {name: [] for name in combo_names}
+    
+    for _, row in top_combos_df.iterrows():
+        veh, prop = row['Vehicle'], row['Propulsion']
+        name = f"{veh} & {prop}"
+        scores_ae[name].append((base_ae_totals[veh] + base_aq_totals[prop]) / 2)
+        
+    for crit_to_remove in aerial_base_w.index:
+        new_w = aerial_base_w.copy()
+        new_w[crit_to_remove] = 0.0
+        if new_w.sum() > 0:
+            new_w = (new_w / new_w.sum()) * 100.0
+        new_totals = aerial_scores.multiply(new_w / 100, axis=0).sum()
+        
+        for _, row in top_combos_df.iterrows():
+            veh, prop = row['Vehicle'], row['Propulsion']
+            name = f"{veh} & {prop}"
+            scores_ae[name].append((new_totals[veh] + base_aq_totals[prop]) / 2)
+            
+    x_ae = np.arange(len(scenarios_ae))
+    for i, name in enumerate(combo_names):
+        ax1.bar(x_ae + offsets[i], scores_ae[name], width, label=name, zorder=3)
+        
+    ax1.set_ylabel('Combined Score', fontsize=12)
+    ax1.set_title('Aerial Criteria Eliminated', fontsize=14, fontweight='bold')
+    ax1.set_xticks(x_ae)
+    ax1.set_xticklabels(scenarios_ae, fontsize=10, fontweight='bold')
+    ax1.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
 
+    # --- Subplot 2: Aquatic Removals ---
+    ax2 = axes[1]
+    scenarios_aq = ["Baseline"] + [f"No {crit}" for crit in aquatic_base_w.index]
+    scores_aq = {name: [] for name in combo_names}
+    
+    for _, row in top_combos_df.iterrows():
+        veh, prop = row['Vehicle'], row['Propulsion']
+        name = f"{veh} & {prop}"
+        scores_aq[name].append((base_ae_totals[veh] + base_aq_totals[prop]) / 2)
+        
+    for crit_to_remove in aquatic_base_w.index:
+        new_w = aquatic_base_w.copy()
+        new_w[crit_to_remove] = 0.0
+        if new_w.sum() > 0:
+            new_w = (new_w / new_w.sum()) * 100.0
+        new_totals = aquatic_scores.multiply(new_w / 100, axis=0).sum()
+        
+        for _, row in top_combos_df.iterrows():
+            veh, prop = row['Vehicle'], row['Propulsion']
+            name = f"{veh} & {prop}"
+            scores_aq[name].append((base_ae_totals[veh] + new_totals[prop]) / 2)
+            
+    x_aq = np.arange(len(scenarios_aq))
+    for i, name in enumerate(combo_names):
+        ax2.bar(x_aq + offsets[i], scores_aq[name], width, label=name, zorder=3)
+        
+    ax2.set_title('Aquatic Criteria Eliminated', fontsize=14, fontweight='bold')
+    ax2.set_xticks(x_aq)
+    ax2.set_xticklabels(scenarios_aq, fontsize=10, fontweight='bold')
+    ax2.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
+    
+    # Legend setup
+    handles, labels = ax2.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.99, 0.5), title="Top 6 Concepts")
+    
+    plt.tight_layout()
+    plt.subplots_adjust(right=0.85, top=0.90)
+
+
+def plot_weight_variance_graphs(tradeoff_name, eval_matrix, cols, sweep_pct):
+    df_base = eval_matrix.drop("Total score")
+    baseline_weights = df_base["Weight"].astype(float)
+    scores = df_base[cols].astype(float)
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle(f"{tradeoff_name}: Sensitivity to Weight Variance (+/- {sweep_pct}%)", fontsize=16, fontweight='bold')
+    axes = axes.flatten()
+    
+    for i, target_crit in enumerate(baseline_weights.index):
+        ax = axes[i]
+        simulated_scores = {concept: [] for concept in cols}
+        
+        w_base_target = baseline_weights[target_crit]
+        min_w = max(0.0, w_base_target - sweep_pct)
+        max_w = min(100.0, w_base_target + sweep_pct)
+        weight_range = np.linspace(min_w, max_w, 100)
+        
+        for w_target in weight_range:
+            diff = w_target - w_base_target
+            other_sum = 100.0 - w_base_target
+            
+            new_weights = baseline_weights.copy()
+            new_weights[target_crit] = w_target
+            
+            if other_sum > 0:
+                for ocrit in baseline_weights.index:
+                    if ocrit != target_crit:
+                        new_weights[ocrit] -= diff * (baseline_weights[ocrit] / other_sum)
+            else:
+                for ocrit in baseline_weights.index:
+                    if ocrit != target_crit:
+                        new_weights[ocrit] = (100.0 - w_target) / (len(baseline_weights) - 1)
+                        
+            new_totals = scores.multiply(new_weights / 100, axis=0).sum()
+            for concept in cols:
+                simulated_scores[concept].append(new_totals[concept])
+                
+        for concept in cols:
+            line_style = '-' if concept == actual_concept_names_list[0] else '--' 
+            linewidth = 3 if concept == actual_concept_names_list[0] else 1.5
+            
+            ax.plot(weight_range, simulated_scores[concept], 
+                    label=concept, linestyle=line_style, linewidth=linewidth)
+        
+        ax.axvline(x=baseline_weights[target_crit], color='black', linestyle=':', label='Baseline Weight')
+        ax.set_title(f"Varying Weight of: {target_crit}")
+        ax.set_xlabel(f"{target_crit} Weight (%)")
+        ax.set_ylabel("Total Score")
+        ax.set_xlim(min_w, max_w)
+        ax.grid(True, alpha=0.3)
+        
+        if i == 0:
+            ax.legend(loc='upper right', fontsize=8)
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92) 
+
+def plot_criteria_removal_bars(tradeoff_name, eval_matrix, cols):
+    df_base = eval_matrix.drop("Total score")
+    baseline_weights = df_base["Weight"].astype(float)
+    scores = df_base[cols].astype(float)
+
+    scenarios = ["Baseline"] + [f"No {crit}" for crit in baseline_weights.index]
+    concept_scores = {concept: [] for concept in cols}
+
+    baseline_totals = scores.multiply(baseline_weights / 100, axis=0).sum()
+    for concept in cols:
+        concept_scores[concept].append(baseline_totals[concept])
+
+    for crit_to_remove in baseline_weights.index:
+        new_weights = baseline_weights.copy()
+        new_weights[crit_to_remove] = 0.0
+        
+        other_sum = new_weights.sum()
+        if other_sum > 0:
+            new_weights = (new_weights / other_sum) * 100.0
+
+        new_totals = scores.multiply(new_weights / 100, axis=0).sum()
+        for concept in cols:
+            concept_scores[concept].append(new_totals[concept])
+
+    x = np.arange(len(scenarios))
+    num_concepts = len(cols)
+    width = 0.12 
+    
+    fig, ax = plt.subplots(figsize=(14, 7))
+    offsets = np.linspace(-width*(num_concepts-1)/2, width*(num_concepts-1)/2, num_concepts)
+    
+    for i, concept in enumerate(cols):
+        ax.bar(x + offsets[i], concept_scores[concept], width, label=concept, zorder=3)
+
+    ax.set_ylabel('Total Score', fontsize=12)
+    ax.set_title(f'{tradeoff_name}: Impact of Eliminating Individual Criteria', fontsize=16, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(scenarios, fontsize=11, fontweight='bold')
+    
+    ax.axhline(y=baseline_totals.max(), color='black', linestyle='--', alpha=0.5, zorder=2, label='Baseline Winner Score')
+
+    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
+    ax.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
+    plt.tight_layout()
+
+
+# ==========================================
+# 9. Final Output Execution
+# ==========================================
 if __name__ == "__main__":
-    print_report()
-    plot_weight_sweep()
-    plot_elimination()
-    plot_score_risk()
-    plot_score_perturbation()
+    pd.options.display.float_format = '{:.3f}'.format
+
+    print("--- AERIAL Concept Evaluation (Dynamically Calculated) ---")
+    print(aerial_matrix)
+    print("\n" + "="*80 + "\n")
+
+    print("--- AQUATIC Concept Evaluation (Dynamically Calculated) ---")
+    print(aquatic_matrix)
+    print("\n" + "="*80 + "\n")
+
+    print("--- Top 6 Ranked Compatible Combinations ---")
+    print(top_6_results.to_string())
+    print("\n" + "="*80 + "\n")
+
+    print("--- Final Trade-off Main Criteria & Total Score ---")
+    final_display_df_reset = final_display_df.reset_index() 
+    print(final_display_df_reset.to_string(index=False))
+    print("\n" + "="*80 + "\n")
+
+    print("--- Ultimate Final Ranking ---")
+    print(final_ranking_df.to_string())
+    print("\n" + "="*80 + "\n")
+
+    print("Generating Sensitivity Graphs...")
+    
+    # Plot 1: Initial Aerial & Aquatic Sensitivity (8 graphs, 15 lines each)
+    plot_initial_tradeoff_sensitivity(aerial_matrix, aquatic_matrix, results_df, SENSITIVITY_SWEEP_PERCENT)
+    
+    # Plot 2: Initial Aerial & Aquatic Criteria Elimination Bar Charts (Filtered to Top 6 for readability)
+    plot_initial_criteria_removal_bars(aerial_matrix, aquatic_matrix, top_6_results)
+    
+    # Plot 3: Final Trade-off continuous weight variance
+    plot_weight_variance_graphs("Final Concept Trade-off", final_display_df, actual_concept_names_list, SENSITIVITY_SWEEP_PERCENT)
+    
+    # Plot 4: Final Trade-off criteria elimination
+    plot_criteria_removal_bars("Final Concept Trade-off", final_display_df, actual_concept_names_list)
+    
+    # Display all generated figures
+    plt.show()
