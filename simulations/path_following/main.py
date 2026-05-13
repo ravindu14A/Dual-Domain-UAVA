@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.animation import FuncAnimation
 import matplotlib.patches as mpatches
+from matplotlib.widgets import Button
 
 # ── Local imports (same package directory) ────────────────────────────────────
 _HERE = Path(__file__).parent
@@ -381,6 +382,40 @@ def animate(result: dict, path: InspectionPath,
     interval_ms = int(dt * stride * 1000 / speed)
     anim = FuncAnimation(fig, update, frames=len(idx),
                          interval=interval_ms, blit=False)
+
+    # ── Play / Pause button ───────────────────────────────────────────────────
+    if not save:
+        # Make room at the bottom for the button
+        fig.subplots_adjust(bottom=0.10)
+
+        btn_ax  = fig.add_axes([0.42, 0.02, 0.16, 0.045])
+        btn_ax.set_facecolor("#161b22")
+        play_btn = Button(btn_ax, "⏸  Pause",
+                          color="#21262d", hovercolor="#30363d")
+        play_btn.label.set_color("white")
+        play_btn.label.set_fontsize(9)
+
+        _paused = [False]   # mutable cell so the closure can write to it
+
+        def toggle_pause(event):
+            if _paused[0]:
+                anim.resume()
+                play_btn.label.set_text("⏸  Pause")
+            else:
+                anim.pause()
+                play_btn.label.set_text("▶  Play")
+            _paused[0] = not _paused[0]
+            fig.canvas.draw_idle()
+
+        play_btn.on_clicked(toggle_pause)
+
+        # Also toggle with the spacebar
+        def on_key(event):
+            if event.key == " ":
+                toggle_pause(event)
+
+        fig.canvas.mpl_connect("key_press_event", on_key)
+
 
     handles = [
         mpatches.Patch(color="#666666", alpha=0.5, label="Path"),
