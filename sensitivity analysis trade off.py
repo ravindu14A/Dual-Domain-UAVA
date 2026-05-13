@@ -16,7 +16,7 @@ import matplotlib.patches as mpatches
 from adjustText import adjust_text
 
 # ── Sensitivity margins (change these to explore different assumptions) ──────
-WEIGHT_MARGIN = 20   # ±pp variation on each criterion weight
+WEIGHT_MARGIN = 10   # ±pp variation on each criterion weight
 #   Justification: reflects the typical spread in team member weight preferences;
 #   10 pp is also a conventional starting point for first-order robustness checks.
 SCORE_MARGIN  = 1    # ±1 score perturbation per sub-criterion
@@ -24,58 +24,138 @@ SCORE_MARGIN  = 1    # ±1 score perturbation per sub-criterion
 #   meaningful perturbation and reflects realistic scoring disagreement.
 # ─────────────────────────────────────────────────────────────────────────────
 
-OPTIONS = [
+# options: aerial, aquatic, final
+
+OPTIONS_AERIAL = [
     "Fixed wing VTOL",
     "Moving wing VTOL",
-    "Rotary wing",
-    "Biomimetics",
-    "Detachable",
+    "Bicopter",
+    "Tricopter",
+    "Quad+ copter",
 ]
 
-CRITERIA = {
+OPTIONS_AQUATIC = [
+    "Biomimetics",
+    "Hydrojet",
+    "Propellers",
+    "Voith-Schneider",
+]
+
+OPTIONS_FINAL = [
+    "Quad+ and Prop",
+    "Quad+ and VS",
+    "Quad+ and H-jet",
+    "Quad+ and Bio",
+    "Tri and Prop",
+    "Bi and Prop",
+]
+
+# criteria: aerial, aquatic, final
+
+CRITERIA_AERIAL = {
     "Performance": {
         "weight": 40,
         "sub": {
-            "Mass":                       (15, [2, 2, 3, 1, 1]),
-            "Aerial manoeuvrability":     (10, [1, 2, 3, 2, 3]),
-            "Underwater manoeuvrability": (10, [1, 2, 3, 3, 3]),
-            "Endurance":                  (15, [3, 3, 2, 2, 1]),
-            "Damage tolerance":           (10, [2, 2, 2, 2, 3]),
-            "Aerial efficiency":          (10, [2, 2, 3, 2, 3]),
-            "Underwater efficiency":      ( 5, [1, 2, 2, 3, 3]),
-            "Payload":                    ( 5, [2, 2, 2, 2, 1]),
-            "Transition performance":     ( 5, [1, 3, 3, 3, 3]),
-            "Stability":                  (15, [2, 3, 1, 3, 3]),
+            "Performance": (100, [1, 3, 2, 2, 3])},
+    },
+    "Cost": {
+        "weight": 25,
+        "sub": {
+            "Cost": (100, [2, 1, 2, 2, 2])},
+    },
+    "Risk": {
+        "weight": 20,
+        "sub": {
+            "Risk": (100, [2, 1, 2, 2, 3])},
+    },
+    "Mass": {
+        "weight": 15,
+        "sub": {
+            "Mass": (100, [2, 2, 3, 3, 3])},
+    },
+}
+
+CRITERIA_AQUATIC = {
+    "Performance": {
+        "weight": 40,
+        "sub": {
+            "Performance": (100, [3, 2, 2, 3])},
+    },
+    "Cost": {
+        "weight": 25,
+        "sub": {
+            "Cost": (100, [1, 2, 3, 2])},
+    },
+    "Risk": {
+        "weight": 20,
+        "sub": {
+            "Risk": (100, [1, 2, 2, 1])},
+    },
+    "Mass": {
+        "weight": 15,
+        "sub": {
+            "Mass": (100, [1, 1, 2, 2])},
+    },
+}
+
+CRITERIA_FINAL = {
+    "Performance": {
+        "weight": 40,
+        "sub": {
+            "Mass":                       (20, [3, 2, 2, 1, 3, 3]),
+            "Aerial manoeuvrability":     (10, [3, 3, 3, 2, 2, 1]),
+            "Underwater manoeuvrability": (10, [2, 2, 1, 3, 2, 2]),
+            "Damage tolerance":           (10, [2, 2, 2, 3, 1, 1]),
+            "Aerial efficiency":          (15, [2, 2, 2, 2, 3, 3]),
+            "Underwater efficiency":      (10, [2, 3, 1, 3, 2, 2]),
+            "Payload":                    ( 5, [3, 2, 1, 1, 3, 3]),
+            "Transition performance":     ( 5, [2, 2, 1, 2, 2, 2]),
+            "Stability":                  (15, [3, 3, 2, 3, 2, 1]),
         },
     },
     "Cost": {
         "weight": 30,
         "sub": {
-            "Capex":       (25, [3, 2, 2, 1, 1]),
-            "Opex":        (45, [1, 2, 2, 2, 1]),
-            "Maintenance": (30, [2, 2, 2, 1, 1]),
+            "Capex":       (40, [3, 2, 1, 1, 2, 2]),
+            "Opex":        (60, [3, 3, 2, 1, 3, 3]),
         },
     },
     "Risk": {
         "weight": 20,
         "sub": {
-            "Complexity":    (40, [2, 2, 3, 1, 3]),
-            "Project risk":  (30, [2, 2, 2, 1, 3]),
-            "Manufacturing": (30, [2, 2, 2, 2, 3]),
+            "Complexity":    (40, [3, 2, 2, 1, 2, 2]),
+            "Project risk":  (30, [3, 2, 1, 1, 3, 3]),
+            "Manufacturing": (30, [3, 3, 2, 1, 3, 3]),
         },
     },
     "Sustainability": {
         "weight": 10,
         "sub": {
-            "Noise":              (50, [1, 2, 2, 3, 2]),
-            "Marine life impact": (50, [2, 2, 2, 3, 2]),
+            "Noise":              (50, [1, 2, 1, 2, 3, 3]),
+            "Marine life impact": (50, [2, 2, 3, 3, 2, 2]),
         },
     },
 }
 
-COLORS = ['#e41a1c', '#377eb8', '#4daf4a', '#ff7f00', '#984ea3']
-CRIT_COLORS = {'Performance': "#df80d4", 'Cost': "#85bbdb",
+
+# criteria colors setting
+
+COLORS_AERIAL = ['#e41a1c', '#377eb8', '#4daf4a', '#ff7f00', '#984ea3']
+COLORS_AQUATIC = ['#e41a1c', '#377eb8', '#4daf4a', '#ff7f00']
+COLORS_FINAL = ['#e41a1c', '#377eb8', '#4daf4a', '#ff7f00', '#984ea3', "#a65628"] # "#17becf"
+
+CRIT_COLORS_AERIAL = {'Performance': "#df80d4", 'Cost': "#85bbdb",
+               'Risk': "#8fc262", 'Mass': "#dbdd57"}
+CRIT_COLORS_AQUATIC = CRIT_COLORS_AERIAL
+CRIT_COLORS_FINAL = {'Performance': "#df80d4", 'Cost': "#85bbdb",
                'Risk': "#8fc262", 'Sustainability': "#dbdd57"}
+
+# select for which trade-off you want to perform the sensitivity analysis
+
+OPTIONS = OPTIONS_AQUATIC # choose: OPTIONS_AERIAL, OPTIONS_AQUATIC, OPTIONS_FINAL
+CRITERIA = CRITERIA_AQUATIC # choose: CRITERIA_AERIAL, CRITERIA_AQUATIC, CRITERIA_FINAL
+COLORS = COLORS_AQUATIC # choose: COLORS_AERIAL, COLORS_AQUATIC, COLORS_FINAL
+CRIT_COLORS = CRIT_COLORS_AQUATIC # choose: CRIT_COLORS_AERIAL, CRIT_COLORS_AQUATIC, CRIT_COLORS_FINAL
 
 # ── Core calculation ─────────────────────────────────────────────────────────
 
@@ -168,11 +248,34 @@ def plot_weight_sweep():
             if current_winner[j] != winner_idx:
                 ax.axvspan(w_range[j], w_range[j+1], color='yellow', alpha=0.6)
 
+        offset_map = {}
+
         for i, (opt, col) in enumerate(zip(OPTIONS, COLORS)):
+
             lw = 2.8 if i == winner_idx else 1.6
-            ls = '-'  #if i == winner_idx else '--'
-            alpha = 1.0 if i == winner_idx else 0.65
-            ax.plot(w_range, matrix[i], color=col, lw=lw, ls=ls, alpha=alpha, label=opt)
+            alpha = 1.0 if i == winner_idx else 0.75
+
+            # Detect overlapping curves
+            key = tuple(np.round(matrix[i], 6))
+
+            if key in offset_map:
+                offset = offset_map[key]
+                offset_map[key] += 0.005
+                ls = '--'
+            else:
+                offset_map[key] = 0.01
+                offset = 0.0
+                ls = '-'
+
+            ax.plot(
+                w_range,
+                matrix[i] + offset,
+                color=col,
+                lw=lw,
+                ls=ls,
+                alpha=alpha,
+                label=opt
+            )
 
         #ax.axvline(base_w, color='black', lw=1.2, ls=':', label='Baseline')
         ax.set_title(f'{crit}  (baseline = {base_w}%)', fontweight='bold')
@@ -183,7 +286,7 @@ def plot_weight_sweep():
 
     handles = [plt.Line2D([0],[0], color=c, lw=2, label=o)
                for o, c in zip(OPTIONS, COLORS)]
-    handles += [mpatches.Patch(color='yellow', label='Other design wins')]
+    handles += [mpatches.Patch(color='yellow', label='Other option scores highest')]
     fig.legend(handles=handles, loc='lower center', ncol=3, fontsize=9,
                bbox_to_anchor=(0.5, 0.0))
     fig.suptitle(f'Sensitivity Analysis - Criterion Weight Variation (±{WEIGHT_MARGIN}%)',
@@ -206,7 +309,7 @@ def plot_elimination():
         scenarios[f'No\n{crit}'] = calculate(overrides)
         scenario_labels.append(f'No\n{crit}')
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+    fig, ax = plt.subplots(figsize=(14, 5)) # 14 was 12
     n_sc  = len(scenarios)
     n_opt = len(OPTIONS)
     x     = np.arange(n_sc)
@@ -225,72 +328,81 @@ def plot_elimination():
     ax.set_title('Sensitivity Analysis - Criterion Elimination\n'
                  '(eliminated criterion weight redistributed proportionally)',
                  fontweight='bold')
-    ax.legend(ncol=3, fontsize=9, loc='upper right')
+    #ax.legend(ncol=3, fontsize=9, loc='upper right')
+
+    ax.legend(
+    ncol=1,
+    fontsize=9,
+    loc='upper left',
+    bbox_to_anchor=(1.02, 1.0),
+    borderaxespad=0
+    )
+
     ax.grid(True, axis='y', alpha=0.25)
     plt.tight_layout()
     #plt.savefig('sensitivity_elimination.png', dpi=150, bbox_inches='tight')
     plt.show()
 
-# ── Figure 3: Score risk map ──────────────────────────────────────────────────
+# # ── Figure 3: Score risk map ──────────────────────────────────────────────────
 
-def plot_score_risk():
-    """
-    Scatter plot: x = weight impact of sub-criterion (how much 1 score point moves total),
-                  y = score gap between winner and runner-up on that sub-criterion.
-    Bottom-right = high impact, small gap → most at risk of changing the outcome.
-    """
-    baseline   = calculate()
-    sorted_idx = sorted(range(len(OPTIONS)), key=lambda i: baseline[i], reverse=True)
-    winner     = sorted_idx[0]
-    runner_up  = sorted_idx[1]
+# def plot_score_risk():
+#     """
+#     Scatter plot: x = weight impact of sub-criterion (how much 1 score point moves total),
+#                   y = score gap between winner and runner-up on that sub-criterion.
+#     Bottom-right = high impact, small gap → most at risk of changing the outcome.
+#     """
+#     baseline   = calculate()
+#     sorted_idx = sorted(range(len(OPTIONS)), key=lambda i: baseline[i], reverse=True)
+#     winner     = sorted_idx[0]
+#     runner_up  = sorted_idx[1]
 
-    impacts, gaps, labels, colors = [], [], [], []
-    for crit, data in CRITERIA.items():
-        W = data["weight"] / 100
-        for sub_name, (w, raw) in data["sub"].items():
-            impact = W * (w / 100)           # score-point → total-score sensitivity
-            gap    = raw[winner] - raw[runner_up]   # positive = winner leads here
-            impacts.append(impact * 100)     # express as % of total score per point
-            gaps.append(gap)
-            labels.append(sub_name)
-            colors.append(CRIT_COLORS[crit])
+#     impacts, gaps, labels, colors = [], [], [], []
+#     for crit, data in CRITERIA.items():
+#         W = data["weight"] / 100
+#         for sub_name, (w, raw) in data["sub"].items():
+#             impact = W * (w / 100)           # score-point → total-score sensitivity
+#             gap    = raw[winner] - raw[runner_up]   # positive = winner leads here
+#             impacts.append(impact * 100)     # express as % of total score per point
+#             gaps.append(gap)
+#             labels.append(sub_name)
+#             colors.append(CRIT_COLORS[crit])
 
-    fig, ax = plt.subplots(figsize=(12, 8))
-    texts = []
-    for x, y, lbl, col in zip(impacts, gaps, labels, colors):
-        ax.scatter(x, y, color=col, s=120, zorder=3, edgecolors='white', linewidth=0.5)
-        texts.append(ax.text(x, y, lbl, fontsize=8))
-    adjust_text(texts, ax=ax,
-                arrowprops=dict(arrowstyle='-', color='gray', lw=0.6),
-                expand=(1.3, 1.5), force_text=(0.5, 0.8))
+#     fig, ax = plt.subplots(figsize=(12, 8))
+#     texts = []
+#     for x, y, lbl, col in zip(impacts, gaps, labels, colors):
+#         ax.scatter(x, y, color=col, s=120, zorder=3, edgecolors='white', linewidth=0.5)
+#         texts.append(ax.text(x, y, lbl, fontsize=8))
+#     adjust_text(texts, ax=ax,
+#                 arrowprops=dict(arrowstyle='-', color='gray', lw=0.6),
+#                 expand=(1.3, 1.5), force_text=(0.5, 0.8))
 
-    ax.axhline(0, color='gray', lw=0.8, ls='--')
-    ax.axvline(np.percentile(impacts, 66), color='red', lw=0.8, ls=':',
-               label='Top-33% impact threshold')
+#     ax.axhline(0, color='gray', lw=0.8, ls='--')
+#     ax.axvline(np.percentile(impacts, 66), color='red', lw=0.8, ls=':',
+#                label='Top-33% impact threshold')
 
-    # quadrant labels
-    ax.text(0.98, 0.98, 'Winner leads,\nhigh impact', transform=ax.transAxes,
-            ha='right', va='top', color='green', fontsize=8, alpha=0.7)
-    ax.text(0.98, 0.02, 'Runner-up leads,\nhigh impact', transform=ax.transAxes,
-            ha='right', va='bottom', color='red', fontsize=8, alpha=0.7)
+#     # quadrant labels
+#     ax.text(0.98, 0.98, 'Winner leads,\nhigh impact', transform=ax.transAxes,
+#             ha='right', va='top', color='green', fontsize=8, alpha=0.7)
+#     ax.text(0.98, 0.02, 'Runner-up leads,\nhigh impact', transform=ax.transAxes,
+#             ha='right', va='bottom', color='red', fontsize=8, alpha=0.7)
 
-    # legend for criteria colours
-    legend_patches = [mpatches.Patch(color=c, label=k)
-                      for k, c in CRIT_COLORS.items()]
-    ax.legend(handles=legend_patches + [
-        plt.Line2D([0],[0], color='red', ls=':', lw=1, label='Top-33% impact')],
-              fontsize=9, loc='upper left')
+#     # legend for criteria colours
+#     legend_patches = [mpatches.Patch(color=c, label=k)
+#                       for k, c in CRIT_COLORS.items()]
+#     ax.legend(handles=legend_patches + [
+#         plt.Line2D([0],[0], color='red', ls=':', lw=1, label='Top-33% impact')],
+#               fontsize=9, loc='upper left')
 
-    ax.set_xlabel(f'Weight impact  (total-score change per ±{SCORE_MARGIN} score point,  %)')
-    ax.set_ylabel(f'Score gap  (winner − runner-up)\n'
-                  f'[{OPTIONS[winner]} vs {OPTIONS[runner_up]}]')
-    ax.set_title('Score Risk Map — Sub-criterion Sensitivity\n'
-                 'Bottom-right: high impact AND small/negative gap → most vulnerable',
-                 fontweight='bold')
-    ax.grid(True, alpha=0.2)
-    plt.tight_layout()
-    #plt.savefig('sensitivity_score_risk.png', dpi=150, bbox_inches='tight')
-    plt.show()
+#     ax.set_xlabel(f'Weight impact  (total-score change per ±{SCORE_MARGIN} score point,  %)')
+#     ax.set_ylabel(f'Score gap  (winner − runner-up)\n'
+#                   f'[{OPTIONS[winner]} vs {OPTIONS[runner_up]}]')
+#     ax.set_title('Score Risk Map — Sub-criterion Sensitivity\n'
+#                  'Bottom-right: high impact AND small/negative gap → most vulnerable',
+#                  fontweight='bold')
+#     ax.grid(True, alpha=0.2)
+#     plt.tight_layout()
+#     #plt.savefig('sensitivity_score_risk.png', dpi=150, bbox_inches='tight')
+#     plt.show()
 
 # ── Figure 4: Individual score perturbation ────────────────────────────────
 
@@ -487,7 +599,12 @@ def plot_score_perturbation():
 
     ax.grid(True, axis='y', alpha=0.25)
 
-    ax.legend(title='Design option', fontsize=8)
+    ax.legend(
+        title='Design option', 
+        fontsize=8, 
+        title_fontsize=9,
+        loc='lower right'
+    )
 
     # highlight overlap region
     ax.axhspan(
@@ -564,5 +681,5 @@ if __name__ == "__main__":
     print_report()
     plot_weight_sweep()
     plot_elimination()
-    plot_score_risk()
+    #plot_score_risk()
     plot_score_perturbation()
