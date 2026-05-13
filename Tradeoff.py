@@ -205,7 +205,7 @@ def plot_initial_tradeoff_sensitivity(aerial_df, aquatic_df, valid_combos_df, sw
     combo_names = [f"{row['Vehicle']} & {row['Propulsion']}" for _, row in valid_combos_df.iterrows()]
     
     fig, axes = plt.subplots(2, 4, figsize=(22, 11))
-    fig.suptitle(f"Sensitivity Analysis: Initial Aerial & Aquatic Trade-offs (+/- {sweep_pct}%)", fontsize=18, fontweight='bold')
+    fig.suptitle(f"Sensitivity Analysis: Initial Aerial & Aquatic WEIGHT Variance (+/- {sweep_pct}%)", fontsize=18, fontweight='bold')
     
     colors = plt.cm.tab20(np.linspace(0, 1, len(combo_names)))
     color_map = {name: color for name, color in zip(combo_names, colors)}
@@ -295,17 +295,94 @@ def plot_initial_tradeoff_sensitivity(aerial_df, aquatic_df, valid_combos_df, sw
         ax.set_xlim(min_w, max_w)
 
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.98, 0.5), fontsize=10, title="Combinations (Top down by baseline score)")
-    
+    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.98, 0.5), fontsize=10, title="Combinations")
     plt.tight_layout()
     plt.subplots_adjust(right=0.83, top=0.90) 
 
 
+def plot_initial_score_variance(aerial_df, aquatic_df, valid_combos_df, sweep_pct):
+    aerial_base_w = aerial_df.drop("Total score")["Weight"].astype(float)
+    aquatic_base_w = aquatic_df.drop("Total score")["Weight"].astype(float)
+    
+    aerial_scores = aerial_df.drop("Total score")[aerial_vehicle_cols].astype(float)
+    aquatic_scores = aquatic_df.drop("Total score")[aquatic_propulsion_cols].astype(float)
+    
+    base_aq_totals = aquatic_scores.multiply(aquatic_base_w / 100, axis=0).sum()
+    base_ae_totals = aerial_scores.multiply(aerial_base_w / 100, axis=0).sum()
+    
+    combo_names = [f"{row['Vehicle']} & {row['Propulsion']}" for _, row in valid_combos_df.iterrows()]
+    
+    fig, axes = plt.subplots(2, 4, figsize=(22, 11))
+    fig.suptitle(f"Sensitivity Analysis: Initial Aerial & Aquatic SCORE Variance (+/- {sweep_pct}%)", fontsize=18, fontweight='bold')
+    
+    colors = plt.cm.tab20(np.linspace(0, 1, len(combo_names)))
+    color_map = {name: color for name, color in zip(combo_names, colors)}
+
+    var_range = np.linspace(-sweep_pct, sweep_pct, 100)
+
+    for i, target_crit in enumerate(aerial_base_w.index):
+        ax = axes[0, i]
+        w_target = aerial_base_w[target_crit] / 100.0
+        
+        for _, row in valid_combos_df.iterrows():
+            veh, prop = row['Vehicle'], row['Propulsion']
+            name = f"{veh} & {prop}"
+            
+            base_score = aerial_scores.loc[target_crit, veh]
+            varied_scores = base_score * (1 + var_range / 100.0)
+            
+            other_sum = 0
+            for ocrit in aerial_base_w.index:
+                if ocrit != target_crit:
+                    other_sum += aerial_scores.loc[ocrit, veh] * (aerial_base_w[ocrit] / 100.0)
+            
+            new_ae_totals = other_sum + (varied_scores * w_target)
+            combined_scores = (new_ae_totals + base_aq_totals[prop]) / 2
+            
+            ax.plot(var_range, combined_scores, color=color_map[name], linewidth=2)
+            
+        ax.axvline(x=0, color='black', linestyle=':', alpha=0.7)
+        ax.set_title(f"Aerial: {target_crit}")
+        ax.set_xlabel(f"Score Variation (%)")
+        ax.set_ylabel("Combined Score")
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(-sweep_pct, sweep_pct)
+
+    for i, target_crit in enumerate(aquatic_base_w.index):
+        ax = axes[1, i]
+        w_target = aquatic_base_w[target_crit] / 100.0
+        
+        for _, row in valid_combos_df.iterrows():
+            veh, prop = row['Vehicle'], row['Propulsion']
+            name = f"{veh} & {prop}"
+            
+            base_score = aquatic_scores.loc[target_crit, prop]
+            varied_scores = base_score * (1 + var_range / 100.0)
+            
+            other_sum = 0
+            for ocrit in aquatic_base_w.index:
+                if ocrit != target_crit:
+                    other_sum += aquatic_scores.loc[ocrit, prop] * (aquatic_base_w[ocrit] / 100.0)
+            
+            new_aq_totals = other_sum + (varied_scores * w_target)
+            combined_scores = (base_ae_totals[veh] + new_aq_totals) / 2
+            
+            ax.plot(var_range, combined_scores, label=name, color=color_map[name], linewidth=2)
+            
+        ax.axvline(x=0, color='black', linestyle=':', alpha=0.7)
+        ax.set_title(f"Aquatic: {target_crit}")
+        ax.set_xlabel(f"Score Variation (%)")
+        ax.set_ylabel("Combined Score")
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(-sweep_pct, sweep_pct)
+
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.98, 0.5), fontsize=10, title="Combinations")
+    plt.tight_layout()
+    plt.subplots_adjust(right=0.83, top=0.90)
+
+
 def plot_initial_criteria_removal_bars(aerial_df, aquatic_df, top_combos_df):
-    """
-    Generates side-by-side grouped bar charts for the initial matrices,
-    showing how the Top 6 Combinations react when criteria are removed.
-    """
     aerial_base_w = aerial_df.drop("Total score")["Weight"].astype(float)
     aquatic_base_w = aquatic_df.drop("Total score")["Weight"].astype(float)
     
@@ -324,7 +401,6 @@ def plot_initial_criteria_removal_bars(aerial_df, aquatic_df, top_combos_df):
     width = 0.12
     offsets = np.linspace(-width*(num_concepts-1)/2, width*(num_concepts-1)/2, num_concepts)
     
-    # --- Subplot 1: Aerial Removals ---
     ax1 = axes[0]
     scenarios_ae = ["Baseline"] + [f"No {crit}" for crit in aerial_base_w.index]
     scores_ae = {name: [] for name in combo_names}
@@ -356,7 +432,6 @@ def plot_initial_criteria_removal_bars(aerial_df, aquatic_df, top_combos_df):
     ax1.set_xticklabels(scenarios_ae, fontsize=10, fontweight='bold')
     ax1.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
 
-    # --- Subplot 2: Aquatic Removals ---
     ax2 = axes[1]
     scenarios_aq = ["Baseline"] + [f"No {crit}" for crit in aquatic_base_w.index]
     scores_aq = {name: [] for name in combo_names}
@@ -387,10 +462,8 @@ def plot_initial_criteria_removal_bars(aerial_df, aquatic_df, top_combos_df):
     ax2.set_xticklabels(scenarios_aq, fontsize=10, fontweight='bold')
     ax2.grid(axis='y', linestyle='--', alpha=0.7, zorder=0)
     
-    # Legend setup
     handles, labels = ax2.get_legend_handles_labels()
     fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.99, 0.5), title="Top 6 Concepts")
-    
     plt.tight_layout()
     plt.subplots_adjust(right=0.85, top=0.90)
 
@@ -401,7 +474,7 @@ def plot_weight_variance_graphs(tradeoff_name, eval_matrix, cols, sweep_pct):
     scores = df_base[cols].astype(float)
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(f"{tradeoff_name}: Sensitivity to Weight Variance (+/- {sweep_pct}%)", fontsize=16, fontweight='bold')
+    fig.suptitle(f"{tradeoff_name}: Sensitivity to WEIGHT Variance (+/- {sweep_pct}%)", fontsize=16, fontweight='bold')
     axes = axes.flatten()
     
     for i, target_crit in enumerate(baseline_weights.index):
@@ -436,9 +509,7 @@ def plot_weight_variance_graphs(tradeoff_name, eval_matrix, cols, sweep_pct):
         for concept in cols:
             line_style = '-' if concept == actual_concept_names_list[0] else '--' 
             linewidth = 3 if concept == actual_concept_names_list[0] else 1.5
-            
-            ax.plot(weight_range, simulated_scores[concept], 
-                    label=concept, linestyle=line_style, linewidth=linewidth)
+            ax.plot(weight_range, simulated_scores[concept], label=concept, linestyle=line_style, linewidth=linewidth)
         
         ax.axvline(x=baseline_weights[target_crit], color='black', linestyle=':', label='Baseline Weight')
         ax.set_title(f"Varying Weight of: {target_crit}")
@@ -452,6 +523,56 @@ def plot_weight_variance_graphs(tradeoff_name, eval_matrix, cols, sweep_pct):
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.92) 
+
+
+def plot_score_variance_graphs(tradeoff_name, eval_matrix, cols, sweep_pct):
+    df_base = eval_matrix.drop("Total score")
+    weights = df_base["Weight"].astype(float)
+    scores = df_base[cols].astype(float)
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle(f"{tradeoff_name}: Sensitivity to SCORE Variance (+/- {sweep_pct}%)", fontsize=16, fontweight='bold')
+    axes = axes.flatten()
+    
+    var_range = np.linspace(-sweep_pct, sweep_pct, 100)
+    
+    for i, target_crit in enumerate(weights.index):
+        ax = axes[i]
+        w_target = weights[target_crit] / 100.0
+        
+        for concept in cols:
+            base_score = scores.loc[target_crit, concept]
+            
+            # calculate the total score from OTHER criteria
+            other_sum = 0
+            for ocrit in weights.index:
+                if ocrit != target_crit:
+                    other_sum += scores.loc[ocrit, concept] * (weights[ocrit] / 100.0)
+            
+            # varied score for target crit
+            varied_scores = base_score * (1 + var_range / 100.0)
+            
+            # new totals
+            new_totals = other_sum + (varied_scores * w_target)
+            
+            line_style = '-' if concept == actual_concept_names_list[0] else '--' 
+            linewidth = 3 if concept == actual_concept_names_list[0] else 1.5
+            
+            ax.plot(var_range, new_totals, label=concept, linestyle=line_style, linewidth=linewidth)
+        
+        ax.axvline(x=0, color='black', linestyle=':', label='Baseline Score')
+        ax.set_title(f"Varying Score of: {target_crit}")
+        ax.set_xlabel(f"{target_crit} Score Variation (%)")
+        ax.set_ylabel("Total Score")
+        ax.set_xlim(-sweep_pct, sweep_pct)
+        ax.grid(True, alpha=0.3)
+        
+        if i == 0:
+            ax.legend(loc='upper left', fontsize=8)
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92) 
+
 
 def plot_criteria_removal_bars(tradeoff_name, eval_matrix, cols):
     df_base = eval_matrix.drop("Total score")
@@ -526,21 +647,32 @@ if __name__ == "__main__":
     print(final_ranking_df.to_string())
     print("\n" + "="*80 + "\n")
 
-    print("Generating Sensitivity Graphs...")
+    print("==== GENERATING SENSITIVITY GRAPHS ====")
+    print("NOTE: The script will display 6 graphs in sequence.")
+    print("Close the current window to automatically load the next graph.\n")
     
-    # Plot 1: Initial Aerial & Aquatic Sensitivity (8 graphs, 15 lines each)
+    print("Graph 1/6: Initial Aerial & Aquatic WEIGHT Sensitivity")
     plot_initial_tradeoff_sensitivity(aerial_matrix, aquatic_matrix, results_df, SENSITIVITY_SWEEP_PERCENT)
-    
-    # Plot 2: Initial Aerial & Aquatic Criteria Elimination Bar Charts (Filtered to Top 6 for readability)
-    plot_initial_criteria_removal_bars(aerial_matrix, aquatic_matrix, top_6_results)
-    
-    # Plot 3: Final Trade-off continuous weight variance
-    plot_weight_variance_graphs("Final Concept Trade-off", final_display_df, actual_concept_names_list, SENSITIVITY_SWEEP_PERCENT)
-    
-    # Plot 4: Final Trade-off criteria elimination
-    plot_criteria_removal_bars("Final Concept Trade-off", final_display_df, actual_concept_names_list)
-    
-    # Display all generated figures
     plt.show()
 
-    #hello
+    print("Graph 2/6: Initial Aerial & Aquatic SCORE Sensitivity")
+    plot_initial_score_variance(aerial_matrix, aquatic_matrix, results_df, SENSITIVITY_SWEEP_PERCENT)
+    plt.show()
+    
+    print("Graph 3/6: Initial Criteria Elimination Bar Charts")
+    plot_initial_criteria_removal_bars(aerial_matrix, aquatic_matrix, top_6_results)
+    plt.show()
+    
+    print("Graph 4/6: Final Trade-off WEIGHT Variance")
+    plot_weight_variance_graphs("Final Concept Trade-off", final_display_df, actual_concept_names_list, SENSITIVITY_SWEEP_PERCENT)
+    plt.show()
+
+    print("Graph 5/6: Final Trade-off SCORE Variance")
+    plot_score_variance_graphs("Final Concept Trade-off", final_display_df, actual_concept_names_list, SENSITIVITY_SWEEP_PERCENT)
+    plt.show()
+    
+    print("Graph 6/6: Final Trade-off Criteria Elimination")
+    plot_criteria_removal_bars("Final Concept Trade-off", final_display_df, actual_concept_names_list)
+    plt.show()
+    
+    print("\nSensitivity Analysis Complete.")
