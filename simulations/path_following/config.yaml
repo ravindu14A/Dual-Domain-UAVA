@@ -1,0 +1,77 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Drone Path-Following Simulation — Configuration
+# Extends the power-simulation parameters with flight-controller settings.
+# Rotor counts supported: 4, 6, 8  (symmetric, equal arm-angles)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Drone Airframe ────────────────────────────────────────────────────────────
+drone:
+  weight: 25.0 # kg, total take-off mass
+  flat_plate_area: 0.09 # m², equivalent aerodynamic drag area
+
+# ── Propulsion ────────────────────────────────────────────────────────────────
+num_motors: 8 # 4 / 6 / 8  (must be one of these three)
+propeller_diameter: 0.20 # m, per-rotor diameter for the num_motors reference config
+hover_efficiency: 0.70 # figure of merit η_FM
+motor_efficiency: 0.85 # motor + ESC electrical efficiency
+rotor_tip_speed: 80.0 # m/s, blade tip speed (reference config)
+profile_power_fraction: 0.12 # k₀ — profile drag fraction of induced hover power
+max_thrust_per_motor: 50 # N
+
+# ── Rotor Drag Torque ─────────────────────────────────────────────────────────
+# Ratio of rotor drag torque [N·m] to thrust [N].
+# Typical propellers: 0.03–0.07.  Used to compute yaw moments.
+k_drag: 0.05
+
+# ── Environment ───────────────────────────────────────────────────────────────
+air_density: 1.225 # kg/m³
+
+# ── Battery ───────────────────────────────────────────────────────────────────
+battery_weight_fraction: 0.45
+battery_specific_energy: 200 # Wh/kg
+battery_efficiency: 0.90
+
+# ── Rigid-Body Inertia ────────────────────────────────────────────────────────
+# If omitted, estimated from arm geometry and mass.
+# For a 15 kg hexacopter with ~0.65 m arm length these are reasonable values.
+# inertia:
+#   Ixx: 0.80   # kg·m²  (roll)
+#   Iyy: 0.80   # kg·m²  (pitch)
+#   Izz: 1.50   # kg·m²  (yaw)
+
+# ── Body Drag ─────────────────────────────────────────────────────────────────
+# Linear velocity drag coefficient [N/(m/s)] applied in the world frame.
+# Models airframe drag without a full aerodynamics simulation.
+body_drag_coeff: 2.5 # N·s/m  (≈ 0.5·ρ·Cd·A at ~4 m/s hover correction)
+
+# ── Flight Controller ─────────────────────────────────────────────────────────
+flight_controller:
+  # Position loop — output: desired linear acceleration [m/s²]
+  pos_pid:
+    Kp: 2.5 # 1/s²
+    Ki: 0.04
+    Kd: 4.5 # s
+    # Altitude (z) can have different gains for robustness
+    Kp_z: 3.5
+    Ki_z: 0.08
+    Kd_z: 6.0
+    max_accel: 6.0 # m/s²  — saturates position PID output
+
+  # Attitude loop — output: body-frame moment [N·m]
+  att_pid:
+    Kp: 50.0 # N·m/rad  (roll / pitch)
+    Ki: 0.3
+    Kd: 12.0
+    Kp_psi: 8.0 # N·m/rad  (yaw — lower bandwidth)
+    Ki_psi: 0.05
+    Kd_psi: 3.0
+
+  max_tilt_deg: 30.0 # maximum roll / pitch angle [°]
+  track_yaw: false # if true, drone always points along path direction
+
+# ── Simulation ────────────────────────────────────────────────────────────────
+simulation:
+  dt: 0.02 # s  — integration timestep (50 Hz)
+  animation_speed: 1.0 # real-time multiplier (2.0 = twice as fast playback)
+  save_animation: false # if true, save to results/animation.mp4
+  results_dir: results
