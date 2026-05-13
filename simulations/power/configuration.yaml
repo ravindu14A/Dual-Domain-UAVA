@@ -1,9 +1,19 @@
-motors: 4
-battery_capacity: 10000 # mAh
+num_motors: 6
+# battery_capacity: 5000 # Wh
+battery_efficiency: 0.9 # Efficiency factor for battery discharge
+battery_weight_fraction: 0.45 # Fraction of drone weight that is battery
+battery_specific_energy: 200 # Wh/kg
+
 motor_voltage: 11.1 # V
 drone:
   weight: 15 # kg
   drag_coefficient: 0.3
+
+air_density: 1.225 # kg/m^3
+propeller_diameter: 0.6 # meters
+hover_efficiency: 0.7 # Efficiency factor for hover power calculation
+
+max_thrust_per_motor: 40 # N
 
 motor_power_consumption:
   - 0:
