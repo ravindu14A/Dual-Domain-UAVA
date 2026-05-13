@@ -10,8 +10,8 @@ drone:
   flat_plate_area: 0.09 # m², equivalent aerodynamic drag area
 
 # ── Propulsion ────────────────────────────────────────────────────────────────
-num_motors: 8 # 4 / 6 / 8  (must be one of these three)
-propeller_diameter: 0.20 # m, per-rotor diameter for the num_motors reference config
+num_motors: 6 # 4 / 6 / 8  (must be one of these three)
+propeller_diameter: 0.30 # m, per-rotor diameter for the num_motors reference config
 hover_efficiency: 0.70 # figure of merit η_FM
 motor_efficiency: 0.85 # motor + ESC electrical efficiency
 rotor_tip_speed: 80.0 # m/s, blade tip speed (reference config)
