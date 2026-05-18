@@ -126,7 +126,6 @@ raw_tradeoff_data = [
     ["Performance", "Mass", 20, 3, 2, 2, 1, 3, 3],
     ["Performance", "Aerial manoeuvrability", 10, 3, 3, 3, 2, 2, 1],
     ["Performance", "Underwater manoeuvrability", 10, 2, 2, 1, 3, 2, 2],
-    ["Performance", "Endurance", 0, 0, 0, 0, 0, 0, 0], 
     ["Performance", "Damage tolerance", 10, 2, 2, 2, 3, 1, 1],
     ["Performance", "Aerial efficiency (hover)", 15, 2, 2, 2, 2, 3, 3],
     ["Performance", "Underwater efficiency", 10, 2, 3, 1, 3, 2, 2],
@@ -136,7 +135,6 @@ raw_tradeoff_data = [
 
     ["Cost", "CAPEX", 40, 3, 2, 1, 1, 2, 2],
     ["Cost", "OPEX", 60, 3, 3, 2, 1, 3, 3],
-    ["Cost", "Maintenance", 0, 0, 0, 0, 0, 0, 0],
 
     ["Risk", "Complexity", 40, 3, 2, 2, 1, 2, 2],
     ["Risk", "Project risk", 30, 3, 2, 1, 1, 3, 3],

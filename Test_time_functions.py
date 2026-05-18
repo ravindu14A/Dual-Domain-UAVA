@@ -106,7 +106,52 @@ def time_spiral(d_total, v_path):
     return d_total / v_path
 
 
-# --- 3. 3D VISUALIZATION MODULE ---
+# --- 3. PATH COORDINATE GENERATORS ---
+
+def get_lawnmower_coords(z_start, z_end, R_max, w_arc, theta_start=0.0):
+    """
+    Generate (z, theta) sample points for a lawnmower inspection path.
+    Returns two lists: z_coords, theta_coords.
+    """
+    z_coords, theta_coords = [], []
+    num_strips = int(np.ceil((2 * np.pi * R_max) / w_arc))
+    d_theta = (2 * np.pi) / num_strips
+    current_theta = theta_start
+
+    for _ in range(num_strips):
+        # Fly Up
+        z_coords.extend(np.linspace(z_start, z_end, 30))
+        theta_coords.extend([current_theta] * 30)
+        next_theta = current_theta + d_theta
+        # Translate Across Top
+        z_coords.extend([z_end] * 5)
+        theta_coords.extend(np.linspace(current_theta, next_theta, 5))
+        current_theta = next_theta
+        # Fly Down
+        z_coords.extend(np.linspace(z_end, z_start, 30))
+        theta_coords.extend([current_theta] * 30)
+        # Translate Across Bottom
+        next_theta = current_theta + d_theta
+        z_coords.extend([z_start] * 5)
+        theta_coords.extend(np.linspace(current_theta, next_theta, 5))
+        current_theta = next_theta
+
+    return z_coords, theta_coords
+
+
+def get_spiral_coords(z_start, z_end, w_flat, theta_start=0.0):
+    """
+    Generate (z, theta) sample points for a spiral inspection path.
+    Returns two lists: z_coords, theta_coords.
+    """
+    num_revs = (z_end - z_start) / w_flat
+    n_points = max(int(num_revs * 100), 50)
+    z_coords = np.linspace(z_start, z_end, n_points)
+    theta_coords = theta_start + ((z_coords - z_start) / w_flat) * (2 * np.pi)
+    return z_coords.tolist(), theta_coords.tolist()
+
+
+# --- 4. 3D VISUALIZATION MODULE ---
 
 def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config, cameras):
     """Generates an interactive 3D matplotlib visualization of the dual-environment flight paths."""
@@ -123,45 +168,12 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     ct = cameras[turbine_config["camera_type"]]
     v_frame_t = get_v_frame(ct["D"], ct["v_fov"]) if "v_fov" in ct else None
     w_arc_t   = get_w_arc(R_blade, ct["D"], ct["h_fov"], label="turbine blade")
-    
+
     def get_radius(z):
         if z <= H_water + H_air_cyl:
             return R_base
         else:
             return R_base - ((R_base - R_top) / H_air_cone) * (z - (H_water + H_air_cyl))
-
-    def get_lawnmower_coords(z_start, z_end, R_max, w_arc, theta_start=0.0):
-        z_coords, theta_coords = [], []
-        num_strips = int(np.ceil((2 * np.pi * R_max) / w_arc))
-        d_theta = (2 * np.pi) / num_strips
-        current_theta = theta_start
-
-        for _ in range(num_strips):
-            # Fly Up
-            z_coords.extend(np.linspace(z_start, z_end, 30))
-            theta_coords.extend([current_theta] * 30)
-            next_theta = current_theta + d_theta
-            # Translate Across Top
-            z_coords.extend([z_end] * 5)
-            theta_coords.extend(np.linspace(current_theta, next_theta, 5))
-            current_theta = next_theta
-            # Fly Down
-            z_coords.extend(np.linspace(z_end, z_start, 30))
-            theta_coords.extend([current_theta] * 30)
-            # Translate Across Bottom
-            next_theta = current_theta + d_theta
-            z_coords.extend([z_start] * 5)
-            theta_coords.extend(np.linspace(current_theta, next_theta, 5))
-            current_theta = next_theta
-
-        return z_coords, theta_coords
-
-    def get_spiral_coords(z_start, z_end, w_flat, theta_start=0.0):
-        num_revs = (z_end - z_start) / w_flat
-        n_points = max(int(num_revs * 100), 50)
-        z_coords = np.linspace(z_start, z_end, n_points)
-        theta_coords = theta_start + ((z_coords - z_start) / w_flat) * (2 * np.pi)
-        return z_coords.tolist(), theta_coords.tolist()
 
     def transform_coords(x, y, z, angle_deg, z_offset):
         """Rotates coordinates around the Y-axis to orient the blades, then translates to the tower top."""

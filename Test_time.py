@@ -23,77 +23,71 @@ from Test_time_functions import (
     plot_inspection_route
 )
 
-# ---  MAIN EXECUTION LOGIC ---
-if __name__ == "__main__":
-    # ---------------------------------------------------------
-    # A. TOWER & TURBINE GEOMETRY CONFIGURATION
-    # ---------------------------------------------------------
-    R_base = 4      # Monopile radius (Constant from seafloor to tower top base)
-    R_top = 2.85       # Nacelle interface radius at the top of the cone
-    
-    H_water = 60    # Underwater portion of the monopile
-    H_air_cyl = 30  # Above-water portion of the monopile (before the cone starts)
-    H_air_cone = 135 # Height of the tapered tower itself
-    
-    # Turbine Configuration (Modeled as 3 equivalent cylinders)
-    R_blade = 3.5     # Abstract radius of the blade cylinder
-    H_blade = 110    # Length of each blade
-    
-    # ---------------------------------------------------------
-    # B. CAMERA CONFIGURATIONS
-    # ---------------------------------------------------------
-    # h_fov, v_fov: full-angle field of view in degrees
-    # D: standoff distance from structure surface (m)
+# ==========================================================
+# A. TOWER & TURBINE GEOMETRY CONFIGURATION
+# ==========================================================
+R_base = 4        # Monopile radius (constant from seafloor to tower top base)
+R_top  = 2.85     # Nacelle interface radius at the top of the cone
 
-    rgb_camera = {
+H_water    = 60   # Underwater portion of the monopile
+H_air_cyl  = 30   # Above-water cylindrical section (before cone starts)
+H_air_cone = 135  # Height of the tapered tower cone
+
+# Turbine (modelled as 3 equivalent cylinders)
+R_blade = 3.5     # Abstract radius of blade cylinder
+H_blade = 110     # Length of each blade
+
+# ==========================================================
+# B. CAMERA CONFIGURATIONS
+# ==========================================================
+# h_fov, v_fov: full-angle field of view in degrees
+# D: standoff distance from structure surface (m)
+
+rgb_camera = {
     "gsd": 0.002, "max_blur": 2.0, "shutter": 0.001,
     "h_fov": 63.0, "v_fov": 46.0, "D": 6.0,
     "h_overlap": 0.75, "v_overlap": 0.75, "fps": 10,
 }
-    event_camera = {
-        "h_fov": 60.0, "v_fov": 45.0, "D": 1,
-        "h_overlap": 0.2, "v_overlap": 0.2,
-    }
+event_camera = {
+    "h_fov": 60.0, "v_fov": 45.0, "D": 6.0,
+    "h_overlap": 0.2, "v_overlap": 0.2,
+}
+hyperspectral_camera = {
+    "gsd": 0.004, "max_blur": 2.0, "h_fov": 38.0,
+    "D": 6.0, "line_rate": 330, "integration": 0.003, "h_overlap": 0.2,
+}  # [Specimen AFX10]
 
-    hyperspectral_camera = {
-        "gsd": 0.004,          
-        "max_blur": 2.0,       
-        "h_fov": 38.0,         
-        "D": 6.0,              
-        "line_rate": 330,      
-        "integration": 0.003,  
-        "h_overlap": 0.2,     
-    } #[Specimen AFX10]
+cameras = {"RGB": rgb_camera, "EVENT": event_camera, "HYPERSPECTRAL": hyperspectral_camera}
 
-    cameras = {"RGB": rgb_camera, "EVENT": event_camera, "HYPERSPECTRAL": hyperspectral_camera}
+# ==========================================================
+# C. PHASE CONFIGURATIONS
+# ==========================================================
 
-    # ---------------------------------------------------------
-    # C. PHASE CONFIGURATIONS
-    # ---------------------------------------------------------
+# WATER PROFILE
+water_config = {
+    "camera_type": "RGB",
+    "flight_mode": "lawnmower",
+    "v_max": 1,
+}
 
-    # WATER PROFILE
-    water_config = {
-        "camera_type": "RGB",
-        "flight_mode": "lawnmower",
-        "v_max": 1,
-    }
+# AIR PROFILE  ← quadcopterSC.py imports this
+air_config = {
+    "camera_type": "RGB",
+    "flight_mode": "lawnmower",
+    "v_max": 1,
+}
 
-    # AIR PROFILE
-    air_config = {
-        "camera_type": "RGB",
-        "flight_mode": "lawnmower",
-        "v_max": 10,
-    }
+# TURBINE PROFILE
+turbine_config = {
+    "camera_type": "RGB",
+    "flight_mode": "lawnmower",
+    "v_max": 1,
+}
 
-    # TURBINE PROFILE
-    turbine_config = {
-        "camera_type": "RGB",
-        "flight_mode": "lawnmower",
-        "v_max": 10,
-    } 
+transition_penalty_seconds = 45.0
 
-    transition_penalty_seconds = 45.0
-
+# ---  MAIN EXECUTION LOGIC ---
+if __name__ == "__main__":
     # DONT CHANGE CODE AFTER THIS POINT
     # ---------------------------------------------------------
     # D. EXECUTE PHASE 1: UNDERWATER
