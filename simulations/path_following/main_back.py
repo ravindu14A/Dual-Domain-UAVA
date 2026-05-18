@@ -29,8 +29,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.animation import FuncAnimation
 import matplotlib.patches as mpatches
-from matplotlib.widgets import Button, Slider
-import json
+from matplotlib.widgets import Button
 
 # ── Local imports (same package directory) ────────────────────────────────────
 _HERE = Path(__file__).parent
@@ -90,7 +89,6 @@ def run_simulation(config: dict, path: InspectionPath,
     t_l, pos_l, target_l = [], [], []
     err_l, bat_l, pwr_l  = [], [], []
     att_l, thr_l          = [], []
-    vel_l, rates_l        = [], []
 
     while t <= t_end + dt * 0.5 and drone.battery > 0.0:
         target = path.position_at(t)
@@ -107,14 +105,13 @@ def run_simulation(config: dict, path: InspectionPath,
         err = float(np.linalg.norm(drone.position - target))
         t_l.append(t)
         pos_l.append(drone.position.copy())
-        vel_l.append(drone.velocity.copy())
         target_l.append(target.copy())
         err_l.append(err)
         bat_l.append(drone.battery)
         pwr_l.append(drone.rotor_power())
         att_l.append(drone.attitude.copy())
-        rates_l.append(drone.body_rates.copy())
         thr_l.append(drone.rotor_thrusts.copy())
+        
 
         t += dt
 
@@ -122,221 +119,17 @@ def run_simulation(config: dict, path: InspectionPath,
     return {
         "t":        t_arr,
         "pos":      np.array(pos_l),
-        "vel":      np.array(vel_l),
         "target":   np.array(target_l),
         "error":    np.array(err_l),
         "battery":  np.array(bat_l),
         "power":    np.array(pwr_l),
         "attitude": np.array(att_l),
-        "rates":    np.array(rates_l),
         "thrusts":  np.array(thr_l),
         "n_rotors": n_rotors,
         "bat_cap":  drone.bat_cap,
         "drone":    drone,
         "dt":       dt,
     }
-
-
-# =============================================================================
-# Kinematics export  (CSV + JSON for Unity / Blender)
-# =============================================================================
-
-def _euler_to_quat(roll: np.ndarray, pitch: np.ndarray,
-                   yaw: np.ndarray):
-    """ZYX Euler → unit quaternion (w, x, y, z).  All inputs in radians."""
-    cr, sr = np.cos(roll  / 2), np.sin(roll  / 2)
-    cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
-    cy, sy = np.cos(yaw   / 2), np.sin(yaw   / 2)
-    qw = cr*cp*cy + sr*sp*sy
-    qx = sr*cp*cy - cr*sp*sy
-    qy = cr*sp*cy + sr*cp*sy
-    qz = cr*cp*sy - sr*sp*cy
-    return qw, qx, qy, qz
-
-
-def export_kinematics(result: dict, out_dir: Path) -> None:
-    """
-    Export full drone kinematics to CSV and JSON.
-
-    Coordinate system (both files)
-    ───────────────────────────────
-      World frame : right-hand, Z-up
-        x = East, y = North, z = Up
-      Body frame  : x = forward, y = left, z = up
-      Euler angles: ZYX convention (yaw applied first, then pitch, then roll)
-      Quaternion  : (w, x, y, z) — standard Hamilton convention
-
-    Unity import notes
-    ──────────────────
-      Unity is left-hand, Y-up.
-        position  → Unity(x, z, y)       [swap y↔z]
-        rotation  → Quaternion(-qx, -qz, -qy, qw)  [negate imaginary parts,
-                                                      swap qy↔qz, Unity xyzw]
-      Import the CSV via a C# MonoBehaviour that reads lines and sets
-      transform.position / transform.rotation each FixedUpdate tick.
-
-    Blender import notes
-    ────────────────────
-      Blender default is right-hand, Z-up — same as this data.
-        position  → object.location = (x, y, z)   [direct]
-        rotation  → object.rotation_mode = 'QUATERNION'
-                    object.rotation_quaternion = (qw, qx, qy, qz)
-      Use the companion blender_import.py script (generated alongside this file).
-    """
-    n   = result["n_rotors"]
-    t   = result["t"]
-    pos = result["pos"]
-    vel = result["vel"]
-    att = result["attitude"]
-    rates = result["rates"]
-    thr = result["thrusts"]
-    pwr = result["power"]
-    bat = result["battery"]
-
-    roll, pitch, yaw = att[:, 0], att[:, 1], att[:, 2]
-    qw, qx, qy, qz   = _euler_to_quat(roll, pitch, yaw)
-
-    drone = result["drone"]
-
-    # Per-rotor power  P_i = T_i^1.5 / sqrt(ρ·A·η_FM) · (1+k0) / η_m
-    rho, A  = drone.rho, drone.A_rotor
-    eta_fm  = drone.eta_fm
-    eta_m   = drone.eta_m
-    k0      = drone.k0
-    T_tot   = thr.sum(axis=1)
-
-    P_rotor = np.zeros_like(thr)
-    for i in range(n):
-        Ti = np.maximum(thr[:, i], 0.01)
-        P_rotor[:, i] = (Ti**1.5 / np.sqrt(rho * A * eta_fm)) * (1 + k0) / eta_m
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # ── CSV ───────────────────────────────────────────────────────────────────
-    rotor_T_cols = ",".join(f"T_{i+1}_N" for i in range(n))
-    rotor_P_cols = ",".join(f"P_{i+1}_W" for i in range(n))
-    header = (
-        "# Drone kinematics export\n"
-        f"# Rotors: {n}  |  dt: {result['dt']:.4f} s\n"
-        "# World frame: right-hand Z-up (x=East, y=North, z=Up)\n"
-        "# Euler: ZYX (yaw-pitch-roll)  |  Quaternion: w,x,y,z (Hamilton)\n"
-        "# Unity: pos→(x,z,y)  rot→Quaternion(-qx,-qz,-qy,qw)  [xyzw order]\n"
-        "# Blender: pos→(x,y,z) direct  rot_quaternion→(qw,qx,qy,qz)\n"
-        "#\n"
-        f"time_s,x_m,y_m,z_m,vx_ms,vy_ms,vz_ms,"
-        f"roll_rad,pitch_rad,yaw_rad,qw,qx,qy,qz,"
-        f"p_rads,q_rads,r_rads,"
-        f"T_total_N,{rotor_T_cols},"
-        f"P_total_W,{rotor_P_cols},"
-        f"battery_Wh"
-    )
-
-    rows = []
-    for k in range(len(t)):
-        row = [
-            f"{t[k]:.4f}",
-            f"{pos[k,0]:.4f}", f"{pos[k,1]:.4f}", f"{pos[k,2]:.4f}",
-            f"{vel[k,0]:.4f}", f"{vel[k,1]:.4f}", f"{vel[k,2]:.4f}",
-            f"{roll[k]:.6f}",  f"{pitch[k]:.6f}", f"{yaw[k]:.6f}",
-            f"{qw[k]:.6f}",    f"{qx[k]:.6f}",    f"{qy[k]:.6f}", f"{qz[k]:.6f}",
-            f"{rates[k,0]:.6f}", f"{rates[k,1]:.6f}", f"{rates[k,2]:.6f}",
-            f"{T_tot[k]:.4f}",
-        ] + [f"{thr[k,i]:.4f}" for i in range(n)] + [
-            f"{pwr[k]:.2f}",
-        ] + [f"{P_rotor[k,i]:.2f}" for i in range(n)] + [
-            f"{bat[k]:.4f}",
-        ]
-        rows.append(",".join(row))
-
-    csv_path = out_dir / f"kinematics_{n}rotors.csv"
-    csv_path.write_text(header + "\n" + "\n".join(rows), encoding="utf-8")
-    print(f"  Saved {csv_path.name}  ({len(rows)} rows)")
-
-    # ── JSON (Unity-friendly structured format) ────────────────────────────────
-    payload = {
-        "meta": {
-            "n_rotors": n,
-            "dt_s": result["dt"],
-            "n_frames": len(t),
-            "coordinate_system": "right_hand_z_up",
-            "axes": {"x": "East", "y": "North", "z": "Up"},
-            "euler_convention": "ZYX_rad",
-            "quaternion": "w_x_y_z_Hamilton",
-            "unity": {
-                "position":   "swap_yz: (x, z, y)",
-                "quaternion": "negate_xyz_swap_yz: (-qx, -qz, -qy, qw)  [Unity xyzw]",
-            },
-            "blender": {
-                "position":   "direct (x, y, z)",
-                "quaternion": "rotation_quaternion = (qw, qx, qy, qz)",
-            },
-        },
-        "frames": [
-            {
-                "t":   float(t[k]),
-                "pos": [float(pos[k,0]), float(pos[k,1]), float(pos[k,2])],
-                "vel": [float(vel[k,0]), float(vel[k,1]), float(vel[k,2])],
-                "euler_zyx": [float(roll[k]), float(pitch[k]), float(yaw[k])],
-                "quat_wxyz": [float(qw[k]), float(qx[k]), float(qy[k]), float(qz[k])],
-                "body_rates": [float(rates[k,0]), float(rates[k,1]), float(rates[k,2])],
-                "T_total_N": float(T_tot[k]),
-                "T_rotors_N": [float(thr[k,i]) for i in range(n)],
-                "P_total_W": float(pwr[k]),
-                "P_rotors_W": [float(P_rotor[k,i]) for i in range(n)],
-                "battery_Wh": float(bat[k]),
-            }
-            for k in range(len(t))
-        ],
-    }
-
-    json_path = out_dir / f"kinematics_{n}rotors.json"
-    json_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-    print(f"  Saved {json_path.name}")
-
-    # ── Blender Python import helper ───────────────────────────────────────────
-    blender_script = f'''\
-"""
-blender_import_{n}rotors.py  — run inside Blender's scripting tab.
-Requires: kinematics_{n}rotors.csv in the same directory as this script.
-
-Creates an Empty object and inserts location + rotation keyframes
-for every recorded timestep.  Set your scene FPS to match the export.
-"""
-import bpy, csv, math
-from pathlib import Path
-
-CSV = Path(__file__).parent / "kinematics_{n}rotors.csv"
-FPS = round(1.0 / {result["dt"]:.4f})   # match simulation dt
-
-# Remove existing "Drone" object if present
-if "Drone" in bpy.data.objects:
-    bpy.data.objects.remove(bpy.data.objects["Drone"], do_unlink=True)
-
-bpy.ops.object.empty_add(type="ARROWS")
-obj = bpy.context.active_object
-obj.name = "Drone"
-obj.rotation_mode = "QUATERNION"
-bpy.context.scene.render.fps = FPS
-
-with open(CSV, newline="") as f:
-    reader = csv.reader(row for row in f if not row.startswith("#"))
-    header = next(reader)
-    for row in reader:
-        d = dict(zip(header, row))
-        frame = round(float(d["time_s"]) * FPS) + 1
-        bpy.context.scene.frame_set(frame)
-        obj.location = (float(d["x_m"]), float(d["y_m"]), float(d["z_m"]))
-        obj.rotation_quaternion = (
-            float(d["qw"]), float(d["qx"]), float(d["qy"]), float(d["qz"])
-        )
-        obj.keyframe_insert("location", frame=frame)
-        obj.keyframe_insert("rotation_quaternion", frame=frame)
-
-print(f"Imported {{frame}} frames into Blender object \\'Drone\\'.")
-'''
-    bl_path = out_dir / f"blender_import_{n}rotors.py"
-    bl_path.write_text(blender_script, encoding="utf-8")
-    print(f"  Saved {bl_path.name}  (run inside Blender's Script editor)")
 
 
 # =============================================================================
@@ -587,6 +380,42 @@ def animate(result: dict, path: InspectionPath,
                 + axes_art)
 
     interval_ms = int(dt * stride * 1000 / speed)
+    anim = FuncAnimation(fig, update, frames=len(idx),
+                         interval=interval_ms, blit=False)
+
+    # ── Play / Pause button ───────────────────────────────────────────────────
+    if not save:
+        # Make room at the bottom for the button
+        fig.subplots_adjust(bottom=0.10)
+
+        btn_ax  = fig.add_axes([0.42, 0.02, 0.16, 0.045])
+        btn_ax.set_facecolor("#161b22")
+        play_btn = Button(btn_ax, "⏸  Pause",
+                          color="#21262d", hovercolor="#30363d")
+        play_btn.label.set_color("white")
+        play_btn.label.set_fontsize(9)
+
+        _paused = [False]   # mutable cell so the closure can write to it
+
+        def toggle_pause(event):
+            if _paused[0]:
+                anim.resume()
+                play_btn.label.set_text("⏸  Pause")
+            else:
+                anim.pause()
+                play_btn.label.set_text("▶  Play")
+            _paused[0] = not _paused[0]
+            fig.canvas.draw_idle()
+
+        play_btn.on_clicked(toggle_pause)
+
+        # Also toggle with the spacebar
+        def on_key(event):
+            if event.key == " ":
+                toggle_pause(event)
+
+        fig.canvas.mpl_connect("key_press_event", on_key)
+
 
     handles = [
         mpatches.Patch(color="#666666", alpha=0.5, label="Path"),
@@ -597,129 +426,16 @@ def animate(result: dict, path: InspectionPath,
                 facecolor="#161b22", labelcolor="white")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
     if save:
-        # ── Video export: use FuncAnimation ──────────────────────────────────
-        anim = FuncAnimation(fig, update, frames=len(idx),
-                             interval=interval_ms, blit=False)
         fname = RESULTS_DIR / f"animation_{n}rotors.mp4"
         anim.save(str(fname), fps=30, dpi=120,
                   writer="ffmpeg",
                   extra_args=["-preset", "fast", "-crf", "23"])
         print(f"  Saved {fname.name}")
         plt.close(fig)
-
     else:
-        # ── Interactive: manual timer so the slider can seek freely ──────────
-        fig.subplots_adjust(bottom=0.14)
-
-        # Time slider ─────────────────────────────────────────────────────────
-        def _dark_ax(rect):
-            ax = fig.add_axes(rect)
-            ax.set_facecolor("#161b22")
-            ax.tick_params(colors="#888888")
-            for sp in ax.spines.values():
-                sp.set_color("#444444")
-            return ax
-
-        sl_ax = _dark_ax([0.12, 0.062, 0.52, 0.025])
-        time_slider = Slider(sl_ax, "t (s)", t[idx[0]], t[idx[-1]],
-                             valinit=t[idx[0]], color="#2196F3",
-                             track_color="#21262d")
-        time_slider.label.set_color("white")
-        time_slider.label.set_fontsize(8)
-        time_slider.valtext.set_color("#aaaaaa")
-        time_slider.valtext.set_fontsize(7)
-
-        # Buttons ─────────────────────────────────────────────────────────────
-        def _btn(rect, label):
-            ax = _dark_ax(rect)
-            b  = Button(ax, label, color="#21262d", hovercolor="#30363d")
-            b.label.set_color("white")
-            b.label.set_fontsize(9)
-            return b
-
-        rewind_btn = _btn([0.67, 0.025, 0.10, 0.045], "⏮  Start")
-        play_btn   = _btn([0.79, 0.025, 0.10, 0.045], "⏸  Pause")
-
-        # Shared mutable state ────────────────────────────────────────────────
-        state = {"i": 0, "playing": True, "slider_driven": False}
-
-        # Draw one frame without blitting
-        def draw(fi: int):
-            update(fi)
-            # Sync slider without re-triggering its callback
-            state["slider_driven"] = True
-            time_slider.set_val(t[idx[fi]])
-            state["slider_driven"] = False
-            fig.canvas.draw_idle()
-
-        draw(0)
-
-        # Timer callback (auto-advance while playing) ─────────────────────────
-        def on_timer():
-            if not state["playing"]:
-                return
-            fi = state["i"] + 1
-            if fi >= len(idx):
-                state["playing"] = False
-                play_btn.label.set_text("▶  Play")
-                fig.canvas.draw_idle()
-                return
-            state["i"] = fi
-            draw(fi)
-
-        timer = fig.canvas.new_timer(interval=interval_ms)
-        timer.add_callback(on_timer)
-        timer.start()
-
-        # Slider callback (scrub to any time) ─────────────────────────────────
-        def on_slider(val):
-            if state["slider_driven"]:
-                return
-            fi = int(np.argmin(np.abs(t[idx] - val)))
-            state["i"] = fi
-            update(fi)
-            fig.canvas.draw_idle()
-
-        time_slider.on_changed(on_slider)
-
-        # Play / Pause ────────────────────────────────────────────────────────
-        def toggle_pause(event=None):
-            state["playing"] = not state["playing"]
-            play_btn.label.set_text(
-                "⏸  Pause" if state["playing"] else "▶  Play"
-            )
-            fig.canvas.draw_idle()
-
-        play_btn.on_clicked(toggle_pause)
-
-        # Rewind to start ─────────────────────────────────────────────────────
-        def rewind(event=None):
-            state["i"] = 0
-            draw(0)
-
-        rewind_btn.on_clicked(rewind)
-
-        # Keyboard shortcuts ──────────────────────────────────────────────────
-        def on_key(event):
-            if event.key == " ":
-                toggle_pause()
-            elif event.key == "r":
-                rewind()
-            elif event.key == "left":       # ← step back 5 %
-                fi = max(state["i"] - max(1, len(idx) // 20), 0)
-                state["i"] = fi
-                draw(fi)
-            elif event.key == "right":      # → step forward 5 %
-                fi = min(state["i"] + max(1, len(idx) // 20), len(idx) - 1)
-                state["i"] = fi
-                draw(fi)
-
-        fig.canvas.mpl_connect("key_press_event", on_key)
-
+        plt.tight_layout()
         plt.show()
-        timer.stop()
 
 
 # =============================================================================
@@ -782,10 +498,6 @@ def main():
           f"Peak: {result['error'].max():.3f} m")
     print(f"  Battery remaining: "
           f"{result['battery'][-1]/result['bat_cap']*100:.1f} %")
-
-    # ── Kinematics export ─────────────────────────────────────────────────────
-    print(f"\n  Exporting kinematics …")
-    export_kinematics(result, RESULTS_DIR)
 
     # ── Tracking plot ─────────────────────────────────────────────────────────
     print(f"\n  Generating tracking plot …")

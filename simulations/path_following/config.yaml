@@ -10,13 +10,13 @@ drone:
   flat_plate_area: 0.09 # m², equivalent aerodynamic drag area
 
 # ── Propulsion ────────────────────────────────────────────────────────────────
-num_motors: 6 # 4 / 6 / 8  (must be one of these three)
-propeller_diameter: 0.30 # m, per-rotor diameter for the num_motors reference config
+num_motors: 4 # 4 / 6 / 8  (must be one of these three)
+propeller_diameter: 0.6 # m, per-rotor diameter for the num_motors reference config
 hover_efficiency: 0.70 # figure of merit η_FM
 motor_efficiency: 0.85 # motor + ESC electrical efficiency
 rotor_tip_speed: 80.0 # m/s, blade tip speed (reference config)
 profile_power_fraction: 0.12 # k₀ — profile drag fraction of induced hover power
-max_thrust_per_motor: 50 # N
+max_thrust_per_motor: 100 # N
 
 # ── Rotor Drag Torque ─────────────────────────────────────────────────────────
 # Ratio of rotor drag torque [N·m] to thrust [N].
@@ -27,8 +27,8 @@ k_drag: 0.05
 air_density: 1.225 # kg/m³
 
 # ── Battery ───────────────────────────────────────────────────────────────────
-battery_weight_fraction: 0.45
-battery_specific_energy: 200 # Wh/kg
+battery_weight_fraction: 0.35
+battery_specific_energy: 700 # Wh/kg
 battery_efficiency: 0.90
 
 # ── Rigid-Body Inertia ────────────────────────────────────────────────────────
