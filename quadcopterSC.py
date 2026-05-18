@@ -252,7 +252,16 @@ def _lawnmower_turn_waypoints(a_max=2.0, r_corner=0.0):
           f"v_horiz={v_horiz:.1f} m/s (peak {v_pk_s:.2f})  "
           f"a_max={a_max:.1f} m/s2  duration={t_dn[-1]-t_hold:.1f} s")
 
-    return np.column_stack([all_t, all_xyz, all_vel])
+    # ── Convert Cartesian path to cylindrical (r, θ, z) and (ṙ, θ̇, ż) ──────────
+    r_arr = np.sqrt(all_xyz[:, 0]**2 + all_xyz[:, 1]**2)
+    θ_arr = np.arctan2(all_xyz[:, 1], all_xyz[:, 0])
+    z_arr = all_xyz[:, 2]
+
+    vr_arr = ( all_vel[:, 0] * np.cos(θ_arr) + all_vel[:, 1] * np.sin(θ_arr))
+    vθ_arr = (-all_vel[:, 0] * np.sin(θ_arr) + all_vel[:, 1] * np.cos(θ_arr)) / np.maximum(r_arr, 1e-6)
+    vz_arr = all_vel[:, 2]
+
+    return np.column_stack([all_t, r_arr, θ_arr, z_arr, vr_arr, vθ_arr, vz_arr])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -559,32 +568,43 @@ def _aerial_timed_waypoints():
     else:
         raise ValueError(f"Unknown flight_mode: '{fmode}'")
 
-    # ── Convert (z, theta) → world (x, y, z) with standoff distance ──────────
-    za  = np.array(za)
-    ta  = np.array(ta)
-    ra  = np.array([get_radius(z) for z in za]) + D   # drone at surface + standoff
-    xyz = np.column_stack([ra * np.cos(ta),
-                           ra * np.sin(ta),
-                           za - H_water])              # normalise z: sea level = 0
+    # ── Build cylindrical path (r, θ, z) directly — no Cartesian conversion ─────
+    za = np.array(za)
+    ta = np.array(ta)
+    ra = np.array([get_radius(z) for z in za]) + D   # standoff radius
+    z_norm = za - H_water                             # z=0 at sea level
 
-    # ── Assign velocity vector at each path point ─────────────────────────────
-    # Direction is the local path tangent; speed is v_vert (vertical segments)
-    # or v_horiz (lateral step segments), matching Test_time's constraint.
-    vel_xyz = np.zeros_like(xyz)
-    for i in range(len(xyz) - 1):
-        dv   = xyz[i + 1] - xyz[i]
+    # Velocity direction from path tangent; classify vertical vs horizontal
+    # Cartesian tangent only used for direction classification, not stored
+    xyz_tmp = np.column_stack([ra * np.cos(ta), ra * np.sin(ta), z_norm])
+    vr_arr  = np.zeros(len(za))
+    vθ_arr  = np.zeros(len(za))
+    vz_arr  = np.zeros(len(za))
+
+    for i in range(len(za) - 1):
+        dv   = xyz_tmp[i + 1] - xyz_tmp[i]
         dist = np.linalg.norm(dv)
         if dist < 1e-10:
             continue
-        vert_frac      = abs(dv[2]) / dist
-        speed          = v_vert if vert_frac > 0.7 else v_horiz
-        vel_xyz[i]     = (dv / dist) * speed
-    vel_xyz[-1] = vel_xyz[-2]   # hold last velocity
+        vert_frac = abs(dv[2]) / dist
+        speed     = v_vert if vert_frac > 0.7 else v_horiz
+        vx_i = (dv[0] / dist) * speed
+        vy_i = (dv[1] / dist) * speed
+        vz_i = (dv[2] / dist) * speed
+        r_i  = max(ra[i], 1e-6)
+        θ_i  = ta[i]
+        vr_arr[i]  =  vx_i * np.cos(θ_i) + vy_i * np.sin(θ_i)
+        vθ_arr[i]  = (-vx_i * np.sin(θ_i) + vy_i * np.cos(θ_i)) / r_i
+        vz_arr[i]  = vz_i
 
-    # ── Assign timestamps from arc-length and Test_time speeds ────────────────
+    vr_arr[-1] = vr_arr[-2]
+    vθ_arr[-1] = vθ_arr[-2]
+    vz_arr[-1] = vz_arr[-2]
+
+    # ── Timestamps from arc-length and speeds ─────────────────────────────────
     times = [0.0]
-    for i in range(1, len(xyz)):
-        dv   = xyz[i] - xyz[i - 1]
+    for i in range(1, len(za)):
+        dv   = xyz_tmp[i] - xyz_tmp[i - 1]
         dist = np.linalg.norm(dv)
         if dist < 1e-10:
             times.append(times[-1])
@@ -594,7 +614,7 @@ def _aerial_timed_waypoints():
         times.append(times[-1] + dist / speed)
 
     times = np.array(times)
-    return np.column_stack([times, xyz, vel_xyz])
+    return np.column_stack([times, ra, ta, z_norm, vr_arr, vθ_arr, vz_arr])
 
 
 def build_test_time_aerial_traj(t_arr):
@@ -608,13 +628,16 @@ def build_test_time_aerial_traj(t_arr):
     t_duration : float  total path duration [s]
     start_xyz  : (3,)   first waypoint position, to initialise sim state
     """
-    wp = _aerial_timed_waypoints()   # (M, 7): [t, x, y, z, vx, vy, vz]
+    wp = _aerial_timed_waypoints()   # (M, 7): [t, r, θ, z, ṙ, θ̇, ż]
     ref_p = np.zeros((3, len(t_arr)))
     ref_v = np.zeros((3, len(t_arr)))
     for ax in range(3):
         ref_p[ax, :] = np.interp(t_arr, wp[:, 0], wp[:, 1 + ax])
         ref_v[ax, :] = np.interp(t_arr, wp[:, 0], wp[:, 4 + ax])
-    return ref_p, ref_v, float(wp[-1, 0]), wp[0, 1:4]
+    # start position in Cartesian for state initialisation
+    r0, θ0, z0 = wp[0, 1], wp[0, 2], wp[0, 3]
+    start_xyz = np.array([r0 * np.cos(θ0), r0 * np.sin(θ0), z0])
+    return ref_p, ref_v, float(wp[-1, 0]), start_xyz
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DISTURBANCE HELPER
@@ -663,7 +686,12 @@ if TRAJ_MODE == "hold":
 
 elif TRAJ_MODE == "custom":
     ref_pos, ref_vel = build_custom_traj(TRAJ_SEGMENTS, t)
-    x0_override = np.array([TRAJ_SEGMENTS[0][1], TRAJ_SEGMENTS[0][2], TRAJ_SEGMENTS[0][3]])
+    # TRAJ_SEGMENTS is cylindrical (r,θ,z) — convert first waypoint to Cartesian for state init
+    if isinstance(TRAJ_SEGMENTS, np.ndarray):
+        r0, θ0, z0 = TRAJ_SEGMENTS[0][1], TRAJ_SEGMENTS[0][2], TRAJ_SEGMENTS[0][3]
+        x0_override = np.array([r0 * np.cos(θ0), r0 * np.sin(θ0), z0])
+    else:
+        x0_override = np.array([TRAJ_SEGMENTS[0][1], TRAJ_SEGMENTS[0][2], TRAJ_SEGMENTS[0][3]])
     print(f"Trajectory mode : CUSTOM  ({len(TRAJ_SEGMENTS)} segments, "
           f"t_end={t_end:.1f} s)")
 
@@ -680,8 +708,28 @@ else:
 
 ref_yaw = np.zeros(N)
 
-# Acceleration feedforward — numerical derivative of ref_vel
-ref_acc = np.gradient(ref_vel, dt, axis=1)
+# Cylindrical reference is used for custom (ndarray) and test_time_air modes
+_USE_CYL_REF = TRAJ_MODE in ("custom", "test_time_air") and isinstance(
+    TRAJ_SEGMENTS if TRAJ_MODE == "custom" else True, (np.ndarray, bool))
+
+# Acceleration feedforward — includes centripetal terms when in cylindrical mode
+if _USE_CYL_REF:
+    # ref_pos = (r, θ, z),  ref_vel = (ṙ, θ̇, ż)
+    r_r  = ref_pos[0]
+    θ_r  = ref_pos[1]
+    ṙ_r  = ref_vel[0]
+    θ̇_r  = ref_vel[1]
+    ż_r  = ref_vel[2]
+    r̈_r  = np.gradient(ṙ_r,  dt)
+    θ̈_r  = np.gradient(θ̇_r, dt)
+    z̈_r  = np.gradient(ż_r,  dt)
+    # Cartesian acceleration: includes centripetal (r·θ̇²) and Coriolis (2ṙ·θ̇) terms
+    ref_acc = np.zeros((3, N))
+    ref_acc[0] = (r̈_r - r_r*θ̇_r**2)*np.cos(θ_r) - (r_r*θ̈_r + 2*ṙ_r*θ̇_r)*np.sin(θ_r)
+    ref_acc[1] = (r̈_r - r_r*θ̇_r**2)*np.sin(θ_r) + (r_r*θ̈_r + 2*ṙ_r*θ̇_r)*np.cos(θ_r)
+    ref_acc[2] = z̈_r
+else:
+    ref_acc = np.gradient(ref_vel, dt, axis=1)
 
 print(f"Disturbances    : {'ON' if DIST_ENABLED else 'OFF'}  "
       f"({len(DISTURBANCES)} row(s) defined)")
@@ -790,8 +838,41 @@ for k in range(N - 1):
     wr    = s[12:16]
 
     # ── Outer PID: position error + velocity feedforward → thrust + att cmd ──
-    e_pos   = ref_pos[:, k] - pos
-    e_vel   = ref_vel[:, k] - vel          # feedforward: non-zero for test_time_air
+    if _USE_CYL_REF:
+        # Measured cylindrical coordinates from state
+        r_m = max(np.sqrt(pos[0]**2 + pos[1]**2), 1e-6)
+        θ_m = np.arctan2(pos[1], pos[0])
+
+        # Cylindrical reference
+        r_r = ref_pos[0, k];  θ_r = ref_pos[1, k];  z_r = ref_pos[2, k]
+
+        # Cylindrical position error (θ wrapped to ±π)
+        e_r = r_r - r_m
+        e_θ = np.arctan2(np.sin(θ_r - θ_m), np.cos(θ_r - θ_m))
+        e_z = z_r - pos[2]
+
+        # Convert to Cartesian using Jacobian at measured θ
+        e_pos = np.array([
+            e_r * np.cos(θ_m) - r_m * e_θ * np.sin(θ_m),
+            e_r * np.sin(θ_m) + r_m * e_θ * np.cos(θ_m),
+            e_z
+        ])
+
+        # Cylindrical velocity error → Cartesian
+        ṙ_m  =  vel[0] * np.cos(θ_m) + vel[1] * np.sin(θ_m)
+        θ̇_m  = (-vel[0] * np.sin(θ_m) + vel[1] * np.cos(θ_m)) / r_m
+        e_ṙ  = ref_vel[0, k] - ṙ_m
+        e_θ̇  = ref_vel[1, k] - θ̇_m
+        e_ż  = ref_vel[2, k] - vel[2]
+        e_vel = np.array([
+            e_ṙ * np.cos(θ_m) - r_m * e_θ̇ * np.sin(θ_m),
+            e_ṙ * np.sin(θ_m) + r_m * e_θ̇ * np.cos(θ_m),
+            e_ż
+        ])
+    else:
+        e_pos = ref_pos[:, k] - pos
+        e_vel = ref_vel[:, k] - vel
+
     int_pos = np.clip(int_pos + e_pos * dt, -pos_i_lim, pos_i_lim)
 
     a_cmd = pos_Kp * e_pos + pos_Ki * int_pos + pos_Kd * e_vel + ref_acc[:, k]
@@ -918,7 +999,7 @@ if DIST_ENABLED and DISTURBANCES:
         print(f"{'═'*48}")
         for ax, lbl in enumerate('xyz'):
             post = t > t_off
-            err  = np.abs(X[ax, :] - ref_pos[ax, :])
+            err  = np.abs(X[ax, :] - ref_pos_cart[ax, :])
             idx  = np.where(post & (err < tols[ax]))[0]
             if len(idx):
                 print(f"  {lbl}-axis : {t[idx[0]] - t_off:.2f} s after gust ends")
@@ -933,13 +1014,27 @@ if DIST_ENABLED and DISTURBANCES:
             print(f"  Pitch torque : {np.abs(U_log[2,gm]).max():6.4f} N·m")
             print(f"  Yaw torque   : {np.abs(U_log[3,gm]).max():6.4f} N·m")
 
-            dev = np.abs(X[0:3, gm] - ref_pos[:, gm]).max(axis=1)
+            dev = np.abs(X[0:3, gm] - ref_pos_cart[:, gm]).max(axis=1)
             print(f"\nPEAK POSITION DEVIATION DURING GUST")
             print(f"  dx={dev[0]:.3f} m  dy={dev[1]:.3f} m  dz={dev[2]:.3f} m")
 
+# ── Convert cylindrical ref to Cartesian for plotting and error analysis ─────
+if _USE_CYL_REF:
+    _r  = ref_pos[0];  _θ = ref_pos[1]
+    _ṙ  = ref_vel[0];  _θ̇ = ref_vel[1]
+    ref_pos_cart = np.array([_r * np.cos(_θ),
+                              _r * np.sin(_θ),
+                              ref_pos[2]])
+    ref_vel_cart = np.array([_ṙ * np.cos(_θ) - _r * _θ̇ * np.sin(_θ),
+                              _ṙ * np.sin(_θ) + _r * _θ̇ * np.cos(_θ),
+                              ref_vel[2]])
+else:
+    ref_pos_cart = ref_pos
+    ref_vel_cart = ref_vel
+
 # ── Tracking error summary (always printed) ───────────────────────────────────
-pos_err_vec = X[0:3, :] - ref_pos          # (3, N)
-vel_err_vec = X[6:9, :] - ref_vel          # (3, N)
+pos_err_vec = X[0:3, :] - ref_pos_cart     # (3, N)
+vel_err_vec = X[6:9, :] - ref_vel_cart     # (3, N)
 pos_err_mag = np.linalg.norm(pos_err_vec, axis=0)   # (N,)
 vel_err_mag = np.linalg.norm(vel_err_vec, axis=0)   # (N,)
 
@@ -1140,9 +1235,28 @@ else:  # PLOT_MODE == "sim"
     _ps   = max(1, N // 10_000)
     t_p   = t[::_ps]
     X_p   = X[:, ::_ps]
-    rp_p  = ref_pos[:, ::_ps]
-    rv_p  = ref_vel[:, ::_ps]
+    rp_p  = ref_pos_cart[:, ::_ps]
+    rv_p  = ref_vel_cart[:, ::_ps]
     Ul_p  = U_log[:, ::_ps]
+
+    # ── Cylindrical actual state (for cyl-mode plots) ────────────────────────
+    if _USE_CYL_REF:
+        _r_p  = np.maximum(np.sqrt(X_p[0,:]**2 + X_p[1,:]**2), 1e-6)
+        _θ_p  = np.arctan2(X_p[1,:], X_p[0,:])
+        _z_p  = X_p[2,:]
+        _vr_p =  X_p[6,:]*np.cos(_θ_p) + X_p[7,:]*np.sin(_θ_p)
+        _vθ_p = (-X_p[6,:]*np.sin(_θ_p) + X_p[7,:]*np.cos(_θ_p)) / _r_p
+        _vz_p =  X_p[8,:]
+
+        _rr_p  = ref_pos[0, ::_ps];  _θr_p = ref_pos[1, ::_ps];  _zr_p = ref_pos[2, ::_ps]
+        _vr_r  = ref_vel[0, ::_ps];  _vθ_r = ref_vel[1, ::_ps];  _vz_r = ref_vel[2, ::_ps]
+
+        _er_p  = _rr_p - _r_p
+        _eθ_p  = np.arctan2(np.sin(_θr_p - _θ_p), np.cos(_θr_p - _θ_p))
+        _ez_p  = _zr_p - _z_p
+        _evr_p = _vr_r - _vr_p
+        _evθ_p = _vθ_r - _vθ_p
+        _evz_p = _vz_r - _vz_p
 
     gc = (0.85, 0.95, 0.85)   # gust window shading colour
 
@@ -1157,19 +1271,28 @@ else:  # PLOT_MODE == "sim"
     fig1, axes1 = plt.subplots(3, 2, figsize=(12, 9), sharex=True)
     fig1.suptitle(f"Position & Attitude  [{TRAJ_MODE}]", fontsize=13)
 
-    pos_labels = ['x  [m]', 'y  [m]', 'z  [m]']
-    att_labels  = ['φ  [deg]', 'θ  [deg]', 'ψ  [deg]']
+    if _USE_CYL_REF:
+        pos_labels  = ['r  [m]', 'θ  [rad]', 'z  [m]']
+        pos_actual  = [_r_p, _θ_p, _z_p]
+        pos_ref     = [_rr_p, _θr_p, _zr_p]
+    else:
+        pos_labels  = ['x  [m]', 'y  [m]', 'z  [m]']
+        pos_actual  = [X_p[0,:], X_p[1,:], X_p[2,:]]
+        pos_ref     = [rp_p[0,:], rp_p[1,:], rp_p[2,:]]
+
+    att_labels = ['φ  [deg]', 'θ  [deg]', 'ψ  [deg]']
 
     for i in range(3):
         ax = axes1[i, 0]
         if PLOT_ACTUAL:
-            ax.plot(t_p, X_p[i, :],  'b',   lw=1.6, label='Actual')
+            ax.plot(t_p, pos_actual[i], 'b',   lw=1.6, label='Actual')
         if PLOT_REFERENCE:
-            ax.plot(t_p, rp_p[i, :], 'r--', lw=1.2, label='Reference')
+            ax.plot(t_p, pos_ref[i],    'r--', lw=1.2, label='Reference')
         ax.set_ylabel(pos_labels[i]); ax.grid(True)
         shade_gusts(ax)
         if i == 0:
-            ax.set_title("Position"); ax.legend(loc='lower right')
+            ax.set_title("Position (cylindrical)" if _USE_CYL_REF else "Position")
+            ax.legend(loc='lower right')
 
         ax = axes1[i, 1]
         ax.plot(t_p, np.degrees(X_p[3+i, :]), 'b', lw=1.6)
@@ -1182,17 +1305,25 @@ else:  # PLOT_MODE == "sim"
     axes1[2, 1].set_xlabel("Time  [s]")
     fig1.tight_layout()
 
-    # ── Figure 2: Velocity tracking (especially useful for test_time_air) ──────
+    # ── Figure 2: Velocity tracking ───────────────────────────────────────────
     fig2, axes2 = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
     fig2.suptitle(f"Velocity Tracking  [{TRAJ_MODE}]", fontsize=13)
-    vel_labels = ['vx  [m/s]', 'vy  [m/s]', 'vz  [m/s]']
+
+    if _USE_CYL_REF:
+        vel_labels  = ['ṙ  [m/s]', 'θ̇  [rad/s]', 'ż  [m/s]']
+        vel_actual  = [_vr_p, _vθ_p, _vz_p]
+        vel_ref     = [_vr_r, _vθ_r, _vz_r]
+    else:
+        vel_labels  = ['vx  [m/s]', 'vy  [m/s]', 'vz  [m/s]']
+        vel_actual  = [X_p[6,:], X_p[7,:], X_p[8,:]]
+        vel_ref     = [rv_p[0,:], rv_p[1,:], rv_p[2,:]]
 
     for i in range(3):
         ax = axes2[i]
         if PLOT_ACTUAL:
-            ax.plot(t_p, X_p[6+i, :], 'b',   lw=1.6, label='Actual')
+            ax.plot(t_p, vel_actual[i], 'b',   lw=1.6, label='Actual')
         if PLOT_REFERENCE:
-            ax.plot(t_p, rv_p[i, :],  'r--', lw=1.2, label='Reference')
+            ax.plot(t_p, vel_ref[i],    'r--', lw=1.2, label='Reference')
         ax.set_ylabel(vel_labels[i]); ax.grid(True)
         shade_gusts(ax)
         if i == 0:
@@ -1200,6 +1331,37 @@ else:  # PLOT_MODE == "sim"
 
     axes2[-1].set_xlabel("Time  [s]")
     fig2.tight_layout()
+
+    # ── Figure 2b: Cylindrical tracking errors (only in cylindrical mode) ────
+    if _USE_CYL_REF:
+        fig2b, axes2b = plt.subplots(3, 2, figsize=(13, 8), sharex=True)
+        fig2b.suptitle(f"Cylindrical Tracking Errors  [{TRAJ_MODE}]", fontsize=13)
+
+        pos_err_data = [(_er_p,  'e_r  [m]',      'Standoff error'),
+                        (_eθ_p,  'e_θ  [rad]',     'Azimuth error'),
+                        (_ez_p,  'e_z  [m]',       'Height error')]
+        vel_err_data = [(_evr_p, 'e_ṙ  [m/s]',    'Radial vel error'),
+                        (_evθ_p, 'e_θ̇  [rad/s]',  'Angular vel error'),
+                        (_evz_p, 'e_ż  [m/s]',    'Vertical vel error')]
+
+        for i, ((pe, pl, pt), (ve, vl, vt)) in enumerate(zip(pos_err_data, vel_err_data)):
+            ax = axes2b[i, 0]
+            ax.plot(t_p, pe, 'b', lw=1.6)
+            ax.axhline(0, color='k', ls=':', lw=0.8)
+            ax.set_ylabel(pl); ax.grid(True)
+            shade_gusts(ax)
+            if i == 0: ax.set_title("Position error  (ref − actual)")
+
+            ax = axes2b[i, 1]
+            ax.plot(t_p, ve, 'darkorange', lw=1.6)
+            ax.axhline(0, color='k', ls=':', lw=0.8)
+            ax.set_ylabel(vl); ax.grid(True)
+            shade_gusts(ax)
+            if i == 0: ax.set_title("Velocity error  (ref − actual)")
+
+        axes2b[2, 0].set_xlabel("Time  [s]")
+        axes2b[2, 1].set_xlabel("Time  [s]")
+        fig2b.tight_layout()
 
     # ── Figure 3: Control Inputs ───────────────────────────────────────────────
     fig3, axes3 = plt.subplots(4, 1, figsize=(9, 10), sharex=True)
