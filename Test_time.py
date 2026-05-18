@@ -242,4 +242,34 @@ if __name__ == "__main__":
     # G. VISUALIZE FLIGHT PATH
     # ---------------------------------------------------------
     print("\nGenerating 3D interactive plot...")
-    plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config, cameras)
+    air_path, turbine_path = plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config, cameras)
+    
+    t_air_path = np.arange(0.0, t_air + t_air/len(air_path), t_air/len(air_path))  # Assuming constant time intervals based on the path generation
+    turbine_path = np.array(turbine_path)
+    
+    n_points = turbine_path[0].shape[1]  # 770
+
+    t_turbine_path = np.linspace(0.0, t_turbine, n_points)  # Assuming constant time intervals based on the path generation
+
+
+    with open("inspection_path_air.csv", "w") as f:
+        f.write("x,y,z,t\n")
+        for (x, y, z), t in zip(air_path, t_air_path):
+            f.write(f"{x:.2f},{y:.2f},{z:.2f},{t:.2f}\n")
+    
+    for idx, (x_path, y_path, z_path) in enumerate(turbine_path):
+        t = np.linspace(0.0, t_turbine, n_points)
+        with open(f"turbine_blade_{idx}.csv", "w") as f:
+            f.write("x,y,z,t\n")
+            for i in range(n_points):
+                f.write(f"{x_path[i]:.2f},{y_path[i]:.2f},{z_path[i]:.2f},{t[i]:.2f}\n")
+    
+    dt = t_turbine / (n_points - 1)
+
+    with open("turbine_all.csv", "w") as f:
+        f.write("x,y,z,t\n")
+        for idx, (x_path, y_path, z_path) in enumerate(turbine_path):
+            t_start = idx * (t_turbine + dt)
+            t = np.linspace(t_start, t_start + t_turbine, n_points)
+            for i in range(n_points):
+                f.write(f"{x_path[i]:.2f},{y_path[i]:.2f},{z_path[i]:.2f},{t[i]:.2f}\n")

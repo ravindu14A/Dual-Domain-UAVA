@@ -201,6 +201,8 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     rw = np.array([get_radius(z) for z in zw])
     ax.plot(rw*np.cos(tw), rw*np.sin(tw), zw, color='blue', linewidth=1.5, label=f'Water Phase ({water_config["flight_mode"]})')
 
+
+    
     theta_at_waterline = tw[-1]
 
     # 4. Generate & Plot Air Path
@@ -210,6 +212,15 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
         za, ta = get_spiral_coords(H_water, H_total, v_frame_a * (1 - ca["v_overlap"]), theta_start=theta_at_waterline)
     ra = np.array([get_radius(z) for z in za])
     ax.plot(ra*np.cos(ta), ra*np.sin(ta), za, color='red', linewidth=1.5, label=f'Air Phase ({air_config["flight_mode"]})')
+
+    air_path = list(zip(ra*np.cos(ta), ra*np.sin(ta), za))
+
+
+    # with open("inspection_path.csv", "w") as f:
+    #     f.write("x,y,z,t\n")
+    #     for i, (x, y, z) in enumerate(zip(ra*np.cos(ta), ra*np.sin(ta), za)):
+    #         f.write(f"{x:.2f},{y:.2f},{z:.2f},{(i*0.2):.2f}\n")
+
 
     # 5. Generate & Plot Turbine (3 Blades) Path & Surfaces
     if turbine_config["flight_mode"] == "lawnmower":
@@ -221,6 +232,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     yb_arr = R_blade * np.sin(tb_list)
     zb_arr = np.array(zb_list)
     
+    
     # Create surface meshes for the blades
     z_b = np.linspace(0, H_blade, 20)
     theta_b = np.linspace(0, 2 * np.pi, 20)
@@ -228,6 +240,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     xb_grid = R_blade * np.cos(tb_grid)
     yb_grid = R_blade * np.sin(tb_grid)
     
+    turbines = []
     for idx, angle in enumerate([0, 120, 240]):
         # Plot Blade Surface
         x_surf, y_surf, z_surf = transform_coords(xb_grid, yb_grid, zb_grid, angle, H_total)
@@ -235,6 +248,8 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
         
         # Plot Blade Flight Path
         x_path, y_path, z_path = transform_coords(xb_arr, yb_arr, zb_arr, angle, H_total)
+        
+        turbines.append((x_path, y_path, z_path))
         # Add label only once to keep legend clean
         lbl = f'Turbine Phase ({turbine_config["flight_mode"]})' if idx == 0 else ""
         ax.plot(x_path, y_path, z_path, color='orange', linewidth=1.5, label=lbl)
@@ -266,6 +281,11 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     ax.legend(by_label.values(), by_label.keys())
     
     plt.tight_layout()
-    plt.show()
+    # plt.show()
+    
+    
+    return air_path, turbines
+    
+    
 
 
