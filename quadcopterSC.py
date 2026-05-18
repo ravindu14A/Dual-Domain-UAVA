@@ -313,7 +313,7 @@ DISTURBANCES = [
 T_BUFFER = 4.0    # [s] extra run-time appended after the last event
 
 # ── Output ───────────────────────────────────────────────────────────────────
-PLOT_MODE       = "sim"        # "sim"        → full simulation plots (figs 1–6)
+PLOT_MODE       = "root_locus"        # "sim"        → full simulation plots (figs 1–6)
                                # "root_locus" → closed-loop pole map only
 PLOT_REFERENCE  = True         # show reference trajectory lines  (sim mode only)
 PLOT_ACTUAL     = True         # show actual (controller) trajectory lines (sim mode only)
@@ -468,18 +468,18 @@ print(f"PID gains       : {_flight_mode} set")
 #   RL(3)  RR(4)
 #
 # Effective moment arm perpendicular to each axis = l / sqrt(2)
-#
-#   τ_φ   = (l/√2)·kT·(ω3² + ω4² − ω1² − ω2²)   all four rotors contribute
-#   τ_θ   = (l/√2)·kT·(ω2² + ω3² − ω1² − ω4²)   all four rotors contribute
-#   τ_ψ   = kQ·(ω1² − ω2² + ω3² − ω4²)
+# Derived from r_i × F_i where F_i = kT·ωi² in body z:
+#   τ_φ   = kT·Σ(y_i·ωi²) = (l/√2)·kT·(+ω1² − ω2² + ω3² − ω4²)
+#   τ_θ   = kT·Σ(-x_i·ωi²) = (l/√2)·kT·(−ω1² − ω2² + ω3² + ω4²)
+#   τ_ψ   = kQ·(ω1² − ω2² + ω3² − ω4²)   [CCW 1,3 positive / CW 2,4 negative]
 
 _lx = p.l / np.sqrt(2) * p.kT   # effective moment arm
 
 A_mix = np.array([
     [ p.kT,  p.kT,  p.kT,  p.kT ],
-    [-_lx,  -_lx,   _lx,   _lx  ],
-    [ _lx,  -_lx,  -_lx,   _lx  ],
-    [ p.kQ, -p.kQ,  p.kQ, -p.kQ ],
+    [ _lx,  -_lx,   _lx,  -_lx  ],   # tau_phi:   (l/√2)·kT·(+ω1²−ω2²+ω3²−ω4²)
+    [-_lx,  -_lx,   _lx,   _lx  ],   # tau_theta: (l/√2)·kT·(−ω1²−ω2²+ω3²+ω4²)
+    [ p.kQ, -p.kQ,  p.kQ, -p.kQ ],   # tau_psi
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -822,11 +822,10 @@ def quad_ode(s, wr_cmd, Fd, taud):
 
     R = rot_ZYX(phi, theta, psi)
 
-    T         = p.kT * np.sum(wr**2)
-    tau_phi   = p.l * p.kT * (wr[3]**2 - wr[1]**2)
-    tau_theta = p.l * p.kT * (wr[2]**2 - wr[0]**2)
-    tau_psi   = p.kQ * (wr[0]**2 - wr[1]**2 + wr[2]**2 - wr[3]**2)
-    tau_body  = np.array([tau_phi, tau_theta, tau_psi]) + taud
+    # Compute virtual inputs directly from A_mix — always consistent with mixing matrix
+    u_actual  = A_mix @ (wr**2)
+    T         = u_actual[0]
+    tau_body  = u_actual[1:4] + taud
 
     Omega_net = wr[0] - wr[1] + wr[2] - wr[3]
     tau_gyro  = p.Jr * Omega_net * np.array([-wb[1], wb[0], 0.0])
