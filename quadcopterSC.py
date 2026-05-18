@@ -360,8 +360,13 @@ print(f"Hover w = {p.omega_h:.1f} rad/s  ({p.omega_h * 60 / (2*np.pi):.0f} RPM)"
 # Custom / hold: original step-response tuning
 
 _gains = {
-    # ── mode : (att_Kp, att_Ki, att_Kd, att_i_lim,
-    #            pos_Kp, pos_Ki, pos_Kd, pos_i_lim, att_lim) ─────────────────
+    # ── mode : att gains  +  pos gains (Cartesian, used only for hold mode)
+    #           +  cyl gains (cylindrical r/t/z, used for custom/test_time_air) ──
+    #
+    # Cylindrical outer loop axes:
+    #   r  = standoff distance  [m]        — radial
+    #   t  = arc-length tangential [m]     — r·e_θ keeps units consistent with r
+    #   z  = height             [m]
     "hold": dict(
         att_Kp    = np.array([5.0,  5.0,  2.5]),
         att_Ki    = np.array([0.05, 0.05, 0.02]),
@@ -372,6 +377,11 @@ _gains = {
         pos_Kd    = np.array([1.2,  1.2,  1.8]),
         pos_i_lim = np.array([2.0,  2.0,  3.0]),
         att_lim   = 0.45,
+        # cylindrical gains unused in hold mode but kept for consistent dict structure
+        cyl_Kp    = np.array([1.8,  1.8,  2.5]),
+        cyl_Ki    = np.array([0.08, 0.08, 0.15]),
+        cyl_Kd    = np.array([1.2,  1.2,  1.8]),
+        cyl_i_lim = np.array([2.0,  2.0,  3.0]),
     ),
     "custom": dict(
         att_Kp    = np.array([16.43,  16.32,  3.0]),
@@ -383,6 +393,11 @@ _gains = {
         pos_Kd    = np.array([2.23,  4.06,  4.08]),
         pos_i_lim = np.array([1.0,  1.0,  2.0]),
         att_lim   = 0.45,
+        # cyl[0]=r  cyl[1]=tangential(arc)  cyl[2]=z
+        cyl_Kp    = np.array([1.876, 4.887, 4.73]),
+        cyl_Ki    = np.array([0.02,  0.02,  0.05]),
+        cyl_Kd    = np.array([2.23,  4.06,  4.08]),
+        cyl_i_lim = np.array([1.0,   1.0,   2.0]),
     ),
     # Spiral: smooth orbit — moderate bandwidth, no excess damping
     "spiral": dict(
@@ -395,6 +410,10 @@ _gains = {
         pos_Kd    = np.array([1.5,  1.5,  2.5]),
         pos_i_lim = np.array([2.0,  2.0,  3.0]),
         att_lim   = 0.45,
+        cyl_Kp    = np.array([2.0,  2.0,  3.0]),
+        cyl_Ki    = np.array([0.05, 0.05, 0.10]),
+        cyl_Kd    = np.array([1.5,  1.5,  2.5]),
+        cyl_i_lim = np.array([2.0,  2.0,  3.0]),
     ),
     # Lawnmower: hard vertical reversals — strong z damping, fast attitude response
     "lawnmower": dict(
@@ -407,6 +426,10 @@ _gains = {
         pos_Kd    = np.array([2.23,  4.06,  4.08]),
         pos_i_lim = np.array([1.0,  1.0,  2.0]),
         att_lim   = 0.45,
+        cyl_Kp    = np.array([1.876, 4.887, 4.73]),
+        cyl_Ki    = np.array([0.02,  0.02,  0.05]),
+        cyl_Kd    = np.array([2.23,  4.06,  4.08]),
+        cyl_i_lim = np.array([1.0,   1.0,   2.0]),
     ),
 }
 
@@ -423,6 +446,11 @@ pos_Ki    = _g["pos_Ki"]
 pos_Kd    = _g["pos_Kd"]
 pos_i_lim = _g["pos_i_lim"]
 att_lim   = _g["att_lim"]
+# Cylindrical outer loop gains — [r, tangential(arc), z]
+cyl_Kp    = _g["cyl_Kp"]
+cyl_Ki    = _g["cyl_Ki"]
+cyl_Kd    = _g["cyl_Kd"]
+cyl_i_lim = _g["cyl_i_lim"]
 
 print(f"PID gains       : {_flight_mode} set")
 
@@ -814,7 +842,7 @@ def rk4_step(s, wr_cmd, Fd, taud, dt):
     return s + (dt/6) * (k1 + 2*k2 + 2*k3 + k4)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN SIMULATION LOOP
+# MAIN SIMULATION LOOP  (skipped in root_locus mode)
 # ══════════════════════════════════════════════════════════════════════════════
 
 X      = np.zeros((16, N))
@@ -829,7 +857,7 @@ int_pos = np.zeros(3)
 U_log  = np.zeros((4, N))   # [T, τ_φ, τ_θ, τ_ψ]
 Wr_log = np.zeros((4, N))   # commanded rotor speeds
 
-for k in range(N - 1):
+for k in (range(N - 1) if PLOT_MODE != "root_locus" else []):
     s     = X[:, k]
     pos   = s[0:3]
     euler = s[3:6];  phi, theta, psi = euler
@@ -839,43 +867,50 @@ for k in range(N - 1):
 
     # ── Outer PID: position error + velocity feedforward → thrust + att cmd ──
     if _USE_CYL_REF:
-        # Measured cylindrical coordinates from state
+        # ── Measured cylindrical state ──────────────────────────────────────
         r_m = max(np.sqrt(pos[0]**2 + pos[1]**2), 1e-6)
         θ_m = np.arctan2(pos[1], pos[0])
+        cs  = np.cos(θ_m);  sn = np.sin(θ_m)
 
-        # Cylindrical reference
-        r_r = ref_pos[0, k];  θ_r = ref_pos[1, k];  z_r = ref_pos[2, k]
+        # ── Exact cylindrical position errors ───────────────────────────────
+        e_r = ref_pos[0, k] - r_m
+        e_θ = np.arctan2(np.sin(ref_pos[1, k] - θ_m),
+                         np.cos(ref_pos[1, k] - θ_m))
+        e_z = ref_pos[2, k] - pos[2]
+        # Arc-length tangential error [m] — consistent units with e_r
+        e_t = r_m * e_θ
 
-        # Cylindrical position error (θ wrapped to ±π)
-        e_r = r_r - r_m
-        e_θ = np.arctan2(np.sin(θ_r - θ_m), np.cos(θ_r - θ_m))
-        e_z = z_r - pos[2]
-
-        # Convert to Cartesian using Jacobian at measured θ
-        e_pos = np.array([
-            e_r * np.cos(θ_m) - r_m * e_θ * np.sin(θ_m),
-            e_r * np.sin(θ_m) + r_m * e_θ * np.cos(θ_m),
-            e_z
-        ])
-
-        # Cylindrical velocity error → Cartesian
-        ṙ_m  =  vel[0] * np.cos(θ_m) + vel[1] * np.sin(θ_m)
-        θ̇_m  = (-vel[0] * np.sin(θ_m) + vel[1] * np.cos(θ_m)) / r_m
+        # ── Exact cylindrical velocity errors ────────────────────────────────
+        ṙ_m  =  vel[0] * cs + vel[1] * sn
+        θ̇_m  = (-vel[0] * sn + vel[1] * cs) / r_m
         e_ṙ  = ref_vel[0, k] - ṙ_m
-        e_θ̇  = ref_vel[1, k] - θ̇_m
+        e_ṫ  = r_m * (ref_vel[1, k] - θ̇_m)   # tangential velocity error [m/s]
         e_ż  = ref_vel[2, k] - vel[2]
-        e_vel = np.array([
-            e_ṙ * np.cos(θ_m) - r_m * e_θ̇ * np.sin(θ_m),
-            e_ṙ * np.sin(θ_m) + r_m * e_θ̇ * np.cos(θ_m),
-            e_ż
-        ])
+
+        # ── Cylindrical integrators ──────────────────────────────────────────
+        int_pos = np.clip(int_pos + np.array([e_r, e_t, e_z]) * dt,
+                          -cyl_i_lim, cyl_i_lim)
+
+        # ── ref_acc projected into cylindrical ──────────────────────────────
+        ra_r = ref_acc[0, k] * cs + ref_acc[1, k] * sn
+        ra_t = -ref_acc[0, k] * sn + ref_acc[1, k] * cs
+        ra_z = ref_acc[2, k]
+
+        # ── Cylindrical PID → acceleration commands ─────────────────────────
+        a_r = cyl_Kp[0]*e_r + cyl_Ki[0]*int_pos[0] + cyl_Kd[0]*e_ṙ + ra_r
+        a_t = cyl_Kp[1]*e_t + cyl_Ki[1]*int_pos[1] + cyl_Kd[1]*e_ṫ + ra_t
+        a_z = cyl_Kp[2]*e_z + cyl_Ki[2]*int_pos[2] + cyl_Kd[2]*e_ż + ra_z
+
+        # ── Exact cylindrical → Cartesian acceleration (no approximation) ───
+        a_cmd = np.array([a_r * cs - a_t * sn,
+                          a_r * sn + a_t * cs,
+                          a_z])
     else:
+        # Cartesian PID (hold mode)
         e_pos = ref_pos[:, k] - pos
         e_vel = ref_vel[:, k] - vel
-
-    int_pos = np.clip(int_pos + e_pos * dt, -pos_i_lim, pos_i_lim)
-
-    a_cmd = pos_Kp * e_pos + pos_Ki * int_pos + pos_Kd * e_vel + ref_acc[:, k]
+        int_pos = np.clip(int_pos + e_pos * dt, -pos_i_lim, pos_i_lim)
+        a_cmd = pos_Kp * e_pos + pos_Ki * int_pos + pos_Kd * e_vel + ref_acc[:, k]
 
     T_cmd = max(p.m * (a_cmd[2] + p.g), 0.1 * p.m * p.g)
 
@@ -960,8 +995,12 @@ print(f"Open-loop poles (hover):\n{np.sort_complex(np.linalg.eigvals(A_lin))}")
 def build_K_cl(pKp, pKi, pKd, aKp, aKi, aKd):
     """
     Returns K_pid (4x16): linearised gain from full state → rotor speed commands.
-    pKi / aKi are accepted for API consistency but not used (no integrator states).
+    pKi / aKi accepted for API consistency but not used (no integrator states).
     A_cl = A_lin + B_lin @ K_pid
+
+    Cylindrical PID note: at hover θ=0, cylindrical coords align with Cartesian
+    (r=x, tangential=y, z=z), so the linearised cylindrical PID is identical to
+    a Cartesian PID with pKp = cyl_Kp, pKd = cyl_Kd. Pass cyl gains here.
     """
     g  = p.g;   m  = p.m;   wh = p.omega_h
     # Virtual-input gain (4x16): u_virt = K_virt @ state
@@ -989,7 +1028,7 @@ def build_K_cl(pKp, pKi, pKd, aKp, aKi, aKd):
 # ANALYSIS OUTPUT
 # ══════════════════════════════════════════════════════════════════════════════
 
-if DIST_ENABLED and DISTURBANCES:
+if PLOT_MODE == "sim" and DIST_ENABLED and DISTURBANCES:
     tols = [0.15, 0.05, 0.10]   # per-axis settling tolerance [m]
     for row in DISTURBANCES:
         t_on, t_off = row[0], row[1]
@@ -1032,17 +1071,17 @@ else:
     ref_pos_cart = ref_pos
     ref_vel_cart = ref_vel
 
-# ── Tracking error summary (always printed) ───────────────────────────────────
-pos_err_vec = X[0:3, :] - ref_pos_cart     # (3, N)
-vel_err_vec = X[6:9, :] - ref_vel_cart     # (3, N)
-pos_err_mag = np.linalg.norm(pos_err_vec, axis=0)   # (N,)
-vel_err_mag = np.linalg.norm(vel_err_vec, axis=0)   # (N,)
-
-print(f"\n{'═'*48}")
-print("TRACKING ERROR SUMMARY")
-print(f"{'═'*48}")
-print(f"  Position  mean={pos_err_mag.mean():.3f} m    max={pos_err_mag.max():.3f} m")
-print(f"  Velocity  mean={vel_err_mag.mean():.3f} m/s  max={vel_err_mag.max():.3f} m/s")
+# ── Tracking error summary (sim mode only) ────────────────────────────────────
+if PLOT_MODE == "sim":
+    pos_err_vec = X[0:3, :] - ref_pos_cart
+    vel_err_vec = X[6:9, :] - ref_vel_cart
+    pos_err_mag = np.linalg.norm(pos_err_vec, axis=0)
+    vel_err_mag = np.linalg.norm(vel_err_vec, axis=0)
+    print(f"\n{'═'*48}")
+    print("TRACKING ERROR SUMMARY")
+    print(f"{'═'*48}")
+    print(f"  Position  mean={pos_err_mag.mean():.3f} m    max={pos_err_mag.max():.3f} m")
+    print(f"  Velocity  mean={vel_err_mag.mean():.3f} m/s  max={vel_err_mag.max():.3f} m/s")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLOTS
@@ -1054,10 +1093,10 @@ if PLOT_MODE not in ("sim", "root_locus"):
 elif PLOT_MODE == "root_locus":
     from matplotlib.widgets import Slider
 
-    # Mutable gain copies
-    # Mutable gain copies
-    _pKp = pos_Kp.copy().astype(float)
-    _pKd = pos_Kd.copy().astype(float)
+    # Mutable gain copies — outer loop uses cyl gains (consistent with sim)
+    # At hover θ=0: cylindrical ≡ Cartesian, so cyl_Kp/Kd plug directly into build_K_cl
+    _pKp = cyl_Kp.copy().astype(float)
+    _pKd = cyl_Kd.copy().astype(float)
     _aKp = att_Kp.copy().astype(float)
     _aKd = att_Kd.copy().astype(float)
     _z3  = np.zeros(3)
@@ -1167,7 +1206,7 @@ elif PLOT_MODE == "root_locus":
     y_kp   = y_kd + SL_H + 0.05
 
     att_lbls = [u'φ', u'θ', u'ψ']   # φ θ ψ
-    pos_lbls = ['x', 'y', 'z']
+    pos_lbls = ['r', 't', 'z']   # r=radial, t=tangential(arc), z=height
     att_cols = ['darkorange', 'gold',      'coral'    ]
     pos_cols = ['royalblue',  'steelblue', 'dodgerblue']
 
@@ -1208,7 +1247,7 @@ elif PLOT_MODE == "root_locus":
                 u'INNER  —  att_Kp / att_Kd  (φ, θ, ψ)', fontsize=9,
                 fontweight='bold', ha='center', color='dimgray')
     fig_rl.text(0.55 + 1*(SL_W+SL_GAP), y_kp + SL_H + 0.010,
-                'OUTER  —  pos_Kp / pos_Kd  (x, y, z)', fontsize=9,
+                u'OUTER  —  cyl_Kp / cyl_Kd  (r, t, z)', fontsize=9,
                 fontweight='bold', ha='center', color='dimgray')
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
