@@ -7,9 +7,10 @@ DSE Team 30 | UAUV for Offshore Wind Turbine Inspection
 STATE (16):  [x  y  z | phi  theta  psi | xd  yd  zd | p  q  r | w1  w2  w3  w4]
               pos(3)    euler(3)           vel(3)        ang_rate(3) rotors(4)
 
-MOTOR LAYOUT (+config, ENU, body x=forward, y=left, z=up):
-  1=front(+x)  2=right(-y)  3=rear(-x)  4=left(+y)
+MOTOR LAYOUT (X config, ENU, body x=forward, y=left, z=up):
+  1=front-left  2=front-right  3=rear-left  4=rear-right
   Motors 1,3: CCW (+z reaction)  |  2,4: CW (-z reaction)
+  Tower faces between motors 1 and 2 (forward face of X)
 
 EULER CONVENTION: ZYX
   positive theta = nose tilted DOWN (forward tilt → +x force)
@@ -457,15 +458,28 @@ print(f"PID gains       : {_flight_mode} set")
 # ══════════════════════════════════════════════════════════════════════════════
 # MIXING MATRIX   A_mix @ [ω1² ω2² ω3² ω4²] = [T  τ_φ  τ_θ  τ_ψ]
 # ══════════════════════════════════════════════════════════════════════════════
-#   τ_φ   = l·kT·(ω4² − ω2²)               left − right
-#   τ_θ   = l·kT·(ω3² − ω1²)               rear  − front (+→ nose down → fwd)
+# X config — arms at 45°, tower between front-left (1) and front-right (2):
+#
+#   FL(1)  FR(2)        CCW: 1, 3   CW: 2, 4
+#     \   /
+#      \ /
+#      / \
+#     /   \
+#   RL(3)  RR(4)
+#
+# Effective moment arm perpendicular to each axis = l / sqrt(2)
+#
+#   τ_φ   = (l/√2)·kT·(ω3² + ω4² − ω1² − ω2²)   all four rotors contribute
+#   τ_θ   = (l/√2)·kT·(ω2² + ω3² − ω1² − ω4²)   all four rotors contribute
 #   τ_ψ   = kQ·(ω1² − ω2² + ω3² − ω4²)
 
+_lx = p.l / np.sqrt(2) * p.kT   # effective moment arm
+
 A_mix = np.array([
-    [ p.kT,          p.kT,         p.kT,        p.kT       ],
-    [ 0,            -p.l*p.kT,     0,            p.l*p.kT  ],
-    [-p.l*p.kT,      0,            p.l*p.kT,    0           ],
-    [ p.kQ,         -p.kQ,         p.kQ,        -p.kQ      ],
+    [ p.kT,  p.kT,  p.kT,  p.kT ],
+    [-_lx,  -_lx,   _lx,   _lx  ],
+    [ _lx,  -_lx,  -_lx,   _lx  ],
+    [ p.kQ, -p.kQ,  p.kQ, -p.kQ ],
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1281,7 +1295,7 @@ else:  # PLOT_MODE == "sim"
     # ── Cylindrical actual state (for cyl-mode plots) ────────────────────────
     if _USE_CYL_REF:
         _r_p  = np.maximum(np.sqrt(X_p[0,:]**2 + X_p[1,:]**2), 1e-6)
-        _θ_p  = np.arctan2(X_p[1,:], X_p[0,:])
+        _θ_p  = np.unwrap(np.arctan2(X_p[1,:], X_p[0,:]))
         _z_p  = X_p[2,:]
         _vr_p =  X_p[6,:]*np.cos(_θ_p) + X_p[7,:]*np.sin(_θ_p)
         _vθ_p = (-X_p[6,:]*np.sin(_θ_p) + X_p[7,:]*np.cos(_θ_p)) / _r_p
