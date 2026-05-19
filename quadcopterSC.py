@@ -30,6 +30,7 @@ try:
 except ImportError:
     tqdm = None
 from Test_time import air_config, cameras, R_base, R_top, H_air_cyl, H_air_cone
+from geometry import total_mass as _geo_mass, Ixx as _geo_Ixx, Iyy as _geo_Iyy, Izz as _geo_Izz, L_arm as _geo_Larm
 
 # ── Trajectory helper functions (used by both custom and test_time_air modes) ─
 
@@ -318,7 +319,7 @@ DISTURBANCES = [
 T_BUFFER = 4.0    # [s] extra run-time appended after the last event
 
 # ── Output ───────────────────────────────────────────────────────────────────
-PLOT_MODE       = "sim"        # "sim"        → full simulation plots (figs 1–6)
+PLOT_MODE       = "root_locus"        # "sim"        → full simulation plots (figs 1–6)
                                # "root_locus" → closed-loop pole map only
 PLOT_REFERENCE  = True         # show reference trajectory lines  (sim mode only)
 PLOT_ACTUAL     = True         # show actual (controller) trajectory lines (sim mode only)
@@ -329,16 +330,16 @@ ENABLE_PLOTS    = PLOT_MODE in ("sim", "root_locus")
 # ══════════════════════════════════════════════════════════════════════════════
 
 class Params:
-    m     = 10.0      # [kg]         total mass (incl. ballast + UW propellers)
-    Ixx   = 0.15      # [kg·m²]      roll inertia
-    Iyy   = 0.15      # [kg·m²]      pitch inertia
-    Izz   = 0.26      # [kg·m²]      yaw inertia
+    m     = _geo_mass  # [kg]         total mass — from geometry.py
+    Ixx   = _geo_Ixx   # [kg·m²]      roll inertia — from geometry.py
+    Iyy   = _geo_Iyy   # [kg·m²]      pitch inertia — from geometry.py
+    Izz   = _geo_Izz   # [kg·m²]      yaw inertia — from geometry.py
     Ixz   = 0.0       # [kg·m²]      xz product of inertia (ZX-plane symmetry: Ixy=Iyz=0)
-    l     = 0.35      # [m]          arm length (CoM to rotor centre)
+    l     = _geo_Larm  # [m]          arm length (CoM to rotor centre) — from geometry.py
     g     = 9.81      # [m/s²]
 
-    kT    = 1.5e-4    # [N·s²/rad²]    thrust coeff  F = kT·ω²
-    kQ    = 3.0e-6    # [N·m·s²/rad²]  torque coeff  Q = kQ·ω²
+    kT    = 5.0e-4    # [N·s²/rad²]    thrust coeff  F = kT·ω²  
+    kQ    = 1.0e-5    # [N·m·s²/rad²]  torque coeff  Q = kQ·ω²  (kQ/kT ≈ 0.02, typical ratio)
     tau_m = 0.06      # [s]            motor first-order lag
     kd    = 0.15      # [N·s/m]        translational drag
     Jr    = 0.0       # [kg·m²]        rotor spin inertia (0 = ignore gyroscopic)
@@ -351,7 +352,8 @@ class Params:
         return np.sqrt(self.m * self.g / (4 * self.kT))
 
 p = Params()
-print(f"Hover w = {p.omega_h:.1f} rad/s  ({p.omega_h * 60 / (2*np.pi):.0f} RPM)")
+print(f"[geometry]  m={p.m:.3f} kg  |  l={p.l:.3f} m  |  Ixx={p.Ixx:.4f}  Iyy={p.Iyy:.4f}  Izz={p.Izz:.4f}  kg·m²")
+print(f"[hover]     w={p.omega_h:.1f} rad/s  ({p.omega_h * 60 / (2*np.pi):.0f} RPM)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PID GAINS  —  one set per trajectory mode
@@ -373,52 +375,50 @@ _gains = {
     #   r  = standoff distance  [m]        — radial
     #   t  = arc-length tangential [m]     — r·e_θ keeps units consistent with r
     #   z  = height             [m]
+    # ── Root-locus tuned gains (from image, all modes share same starting point) ──
     "hold": dict(
-        att_Kp    = np.array([5.0,  5.0,  2.5]),
-        att_Ki    = np.array([0.05, 0.05, 0.02]),
-        att_Kd    = np.array([2.0,  2.0,  1.2]),
-        att_i_lim = np.array([0.5,  0.5,  0.3]),
+        att_Kp    = np.array([65.3,  96.4,  37.9 ]),
+        att_Ki    = np.array([0.5,   0.5,   0.2  ]),
+        att_Kd    = np.array([52.95, 77.6,  64.32]),
+        att_i_lim = np.array([5.0,   5.0,   3.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([1.8,  1.8,  2.5]),
-        cyl_Ki    = np.array([0.08, 0.08, 0.15]),
-        cyl_Kd    = np.array([1.2,  1.2,  1.8]),
-        cyl_i_lim = np.array([2.0,  2.0,  3.0]),
+        cyl_Kp    = np.array([0.604, 0.588, 1.168]),
+        cyl_Ki    = np.array([0.05,  0.05,  0.10 ]),
+        cyl_Kd    = np.array([1.064, 1.06,  2.098]),
+        cyl_i_lim = np.array([2.0,   2.0,   3.0  ]),
     ),
     "custom": dict(
-        att_Kp    = np.array([16.43,  16.32,  3.0]),
-        att_Ki    = np.array([0.02, 0.02, 0.01]),
-        att_Kd    = np.array([3.45,  3.4,  1.495]),
-        att_i_lim = np.array([0.3,  0.3,  0.2]),
+        att_Kp    = np.array([65.3,  96.4,  37.9 ]),
+        att_Ki    = np.array([0.5,   0.5,   0.2  ]),
+        att_Kd    = np.array([52.95, 77.6,  64.32]),
+        att_i_lim = np.array([5.0,   5.0,   3.0  ]),
         att_lim   = 0.45,
-        # cyl[0]=r  cyl[1]=tangential(arc)  cyl[2]=z
-        cyl_Kp    = np.array([1.876, 4.887, 4.73]),
-        cyl_Ki    = np.array([0.02,  0.02,  0.05]),
-        cyl_Kd    = np.array([2.23,  4.06,  4.08]),
-        cyl_i_lim = np.array([1.0,   1.0,   2.0]),
+        cyl_Kp    = np.array([0.604, 0.588, 1.168]),
+        cyl_Ki    = np.array([0.05,  0.05,  0.10 ]),
+        cyl_Kd    = np.array([1.064, 1.06,  2.098]),
+        cyl_i_lim = np.array([2.0,   2.0,   3.0  ]),
     ),
-    # Spiral: smooth orbit — moderate bandwidth, no excess damping
     "spiral": dict(
-        att_Kp    = np.array([15.4,  16.47,  3.117]),
-        att_Ki    = np.array([0.02, 0.02, 0.01]),
-        att_Kd    = np.array([3.328,  3.494 ,  1.523]),
-        att_i_lim = np.array([0.3,  0.3,  0.2]),
+        att_Kp    = np.array([65.3,  96.4,  37.9 ]),
+        att_Ki    = np.array([0.5,   0.5,   0.2  ]),
+        att_Kd    = np.array([52.95, 77.6,  64.32]),
+        att_i_lim = np.array([5.0,   5.0,   3.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([1.917 , 4.804, 4.919]),
-        cyl_Ki    = np.array([0.02,  0.02,  0.05]),
-        cyl_Kd    = np.array([2.232,  4.076,  4.072]),
-        cyl_i_lim = np.array([1.0,   1.0,   2.0]),
+        cyl_Kp    = np.array([0.604, 0.588, 1.168]),
+        cyl_Ki    = np.array([0.05,  0.05,  0.10 ]),
+        cyl_Kd    = np.array([1.064, 1.06,  2.098]),
+        cyl_i_lim = np.array([2.0,   2.0,   3.0  ]),
     ),
-    # Lawnmower: hard vertical reversals — strong z damping, fast attitude response
     "lawnmower": dict(
-        att_Kp    = np.array([15.4,  16.47,  3.117]),
-        att_Ki    = np.array([0.02, 0.02, 0.01]),
-        att_Kd    = np.array([3.328,  3.494 ,  1.523]),
-        att_i_lim = np.array([0.3,  0.3,  0.2]),
+        att_Kp    = np.array([65.3,  96.4,  37.9 ]),
+        att_Ki    = np.array([0.5,   0.5,   0.2  ]),
+        att_Kd    = np.array([52.95, 77.6,  64.32]),
+        att_i_lim = np.array([5.0,   5.0,   3.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([1.917 , 4.804, 4.919]),
-        cyl_Ki    = np.array([0.02,  0.02,  0.05]),
-        cyl_Kd    = np.array([2.232,  4.076,  4.072]),
-        cyl_i_lim = np.array([1.0,   1.0,   2.0]),
+        cyl_Kp    = np.array([0.604, 0.588, 1.168]),
+        cyl_Ki    = np.array([0.05,  0.05,  0.10 ]),
+        cyl_Kd    = np.array([1.064, 1.06,  2.098]),
+        cyl_i_lim = np.array([2.0,   2.0,   3.0  ]),
     ),
 }
 
