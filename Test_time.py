@@ -45,16 +45,16 @@ H_blade = 110     # Length of each blade
 
 rgb_camera = {
     "gsd": 0.002, "max_blur": 2.0, "shutter": 0.001,
-    "h_fov": 63.0, "v_fov": 46.0, "D": 6.0,
+    "h_fov": 63.0, "v_fov": 46.0, "D": 2.0,
     "h_overlap": 0.75, "v_overlap": 0.75, "fps": 10,
 }
 event_camera = {
-    "h_fov": 60.0, "v_fov": 45.0, "D": 6.0,
+    "h_fov": 60.0, "v_fov": 45.0, "D":2.0,
     "h_overlap": 0.2, "v_overlap": 0.2,
 }
 hyperspectral_camera = {
     "gsd": 0.004, "max_blur": 2.0, "h_fov": 38.0,
-    "D": 6.0, "line_rate": 330, "integration": 0.003, "h_overlap": 0.2,
+    "D": 2.0, "line_rate": 330, "integration": 0.003, "h_overlap": 0.2,
 }  # [Specimen AFX10]
 
 cameras = {"RGB": rgb_camera, "EVENT": event_camera, "HYPERSPECTRAL": hyperspectral_camera}

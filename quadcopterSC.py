@@ -1332,12 +1332,13 @@ elif PLOT_MODE == "root_locus":
 else:  # PLOT_MODE == "sim"
     # Decimate to at most 10 000 points so matplotlib renders quickly regardless
     # of simulation length (test_time_air can produce 180 000+ steps).
-    _ps   = max(1, N // 10_000)
-    t_p   = t[::_ps]
-    X_p   = X[:, ::_ps]
-    rp_p  = ref_pos_cart[:, ::_ps]
-    rv_p  = ref_vel_cart[:, ::_ps]
-    Ul_p  = U_log[:, ::_ps]
+    _ps        = max(1, N // 10_000)
+    t_p        = t[::_ps]
+    X_p        = X[:, ::_ps]
+    rp_p       = ref_pos_cart[:, ::_ps]
+    rv_p       = ref_vel_cart[:, ::_ps]
+    Ul_p       = U_log[:, ::_ps]
+    ref_yaw_p  = ref_yaw[::_ps]
 
     # ── Cylindrical actual state (for cyl-mode plots) ────────────────────────
     if _USE_CYL_REF:
@@ -1395,7 +1396,10 @@ else:  # PLOT_MODE == "sim"
             ax.legend(loc='lower right')
 
         ax = axes1[i, 1]
-        ax.plot(t_p, np.degrees(X_p[3+i, :]), 'b', lw=1.6)
+        ax.plot(t_p, np.degrees(X_p[3+i, :]), 'b', lw=1.6, label='Actual')
+        if i == 2 and PLOT_REFERENCE:
+            ax.plot(t_p, np.degrees(np.unwrap(ref_yaw_p)), 'r--', lw=1.2, label='Reference')
+            ax.legend(loc='lower right')
         ax.set_ylabel(att_labels[i]); ax.grid(True)
         shade_gusts(ax)
         if i == 0:
