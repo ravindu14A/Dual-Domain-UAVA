@@ -25,7 +25,54 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from scipy.integrate import solve_ivp
 import control
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
 from Test_time import air_config, cameras, R_base, R_top, H_air_cyl, H_air_cone
+
+# ── Trajectory helper functions (used by both custom and test_time_air modes) ─
+
+def arc_lengths(pts):
+    s = np.zeros(len(pts))
+    for i in range(1, len(pts)):
+        s[i] = s[i-1] + np.linalg.norm(pts[i] - pts[i-1])
+    return s
+
+def trap_speeds(s_arr, v_cruise, a):
+    L      = s_arr[-1]
+    d_ramp = v_cruise**2 / (2 * a)
+    if L >= 2 * d_ramp:
+        v_peak = v_cruise
+    else:
+        v_peak = np.sqrt(a * L)
+        d_ramp = L / 2
+    speeds = np.zeros(len(s_arr))
+    for i, s in enumerate(s_arr):
+        if s <= d_ramp:
+            speeds[i] = max(np.sqrt(2 * a * s), 1e-3)
+        elif s <= L - d_ramp:
+            speeds[i] = v_peak
+        else:
+            speeds[i] = max(np.sqrt(2 * a * (L - s)), 1e-3)
+    return speeds, v_peak
+
+def vel_vecs(pts, speeds):
+    vels = np.zeros_like(pts)
+    for i in range(len(pts)):
+        dv = (pts[i+1] - pts[i]) if i < len(pts)-1 else (pts[i] - pts[i-1])
+        dist = np.linalg.norm(dv)
+        if dist > 1e-10:
+            vels[i] = (dv / dist) * speeds[i]
+    return vels
+
+def make_times(pts, speeds, t_start):
+    times = [t_start]
+    for i in range(1, len(pts)):
+        dist  = np.linalg.norm(pts[i] - pts[i-1])
+        v_avg = (speeds[i-1] + speeds[i]) / 2
+        times.append(times[-1] + dist / max(v_avg, 1e-3))
+    return np.array(times)
 
 
 def _lawnmower_turn_waypoints(a_max=2.0, r_corner=0.0):
@@ -64,7 +111,7 @@ def _lawnmower_turn_waypoints(a_max=2.0, r_corner=0.0):
             v_max, ca["gsd"], ca["line_rate"], ca["integration"], ca["max_blur"])
     else:
         v_vert = v_max
-    v_horiz = v_max
+    v_horiz = float(air_config.get("v_horiz", v_max))
 
     w_arc_step = w_arc_a * (1.0 - ca["h_overlap"])
     nstrips    = int(np.ceil((2 * np.pi * float(R_base)) / w_arc_step))
@@ -87,48 +134,6 @@ def _lawnmower_turn_waypoints(a_max=2.0, r_corner=0.0):
     r_top  = Rt + D   # standoff radius at top of tower
     rc     = float(r_corner)
     n_vert = 60
-
-    # ── Helpers ────────────────────────────────────────────────────────────────
-    def arc_lengths(pts):
-        s = np.zeros(len(pts))
-        for i in range(1, len(pts)):
-            s[i] = s[i-1] + np.linalg.norm(pts[i] - pts[i-1])
-        return s
-
-    def trap_speeds(s_arr, v_cruise, a):
-        L      = s_arr[-1]
-        d_ramp = v_cruise**2 / (2 * a)
-        if L >= 2 * d_ramp:
-            v_peak = v_cruise
-        else:
-            v_peak = np.sqrt(a * L)
-            d_ramp = L / 2
-        speeds = np.zeros(len(s_arr))
-        for i, s in enumerate(s_arr):
-            if s <= d_ramp:
-                speeds[i] = max(np.sqrt(2 * a * s), 1e-3)
-            elif s <= L - d_ramp:
-                speeds[i] = v_peak
-            else:
-                speeds[i] = max(np.sqrt(2 * a * (L - s)), 1e-3)
-        return speeds, v_peak
-
-    def vel_vecs(pts, speeds):
-        vels = np.zeros_like(pts)
-        for i in range(len(pts)):
-            dv = (pts[i+1] - pts[i]) if i < len(pts)-1 else (pts[i] - pts[i-1])
-            dist = np.linalg.norm(dv)
-            if dist > 1e-10:
-                vels[i] = (dv / dist) * speeds[i]
-        return vels
-
-    def make_times(pts, speeds, t_start):
-        times = [t_start]
-        for i in range(1, len(pts)):
-            dist  = np.linalg.norm(pts[i] - pts[i-1])
-            v_avg = (speeds[i-1] + speeds[i]) / 2
-            times.append(times[-1] + dist / max(v_avg, 1e-3))
-        return np.array(times)
 
     def make_corner(P_corner, t1, t2, n_pts=20):
         """Quarter-circle arc of radius rc from direction t1 to direction t2."""
@@ -297,7 +302,7 @@ TRAJ_MODE = "test_time_air"
 #   v_vert = 4.0 m/s (blur-limited),  v_horiz = 10.0 m/s,  strip angle = 32.7 deg
 #
 #   t_start    x       y      z     vx       vy      vz
-TRAJ_ACCEL_MAX = 2.0   # [m/s²] ramp acceleration for trapezoidal velocity profile
+TRAJ_ACCEL_MAX = 10.0   # [m/s²] ramp acceleration for trapezoidal velocity profile
 CORNER_RADIUS  = 0   # [m]    corner-rounding radius at strip top/bottom; 0 = sharp corners
 TRAJ_SEGMENTS  = _lawnmower_turn_waypoints(a_max=TRAJ_ACCEL_MAX, r_corner=CORNER_RADIUS)
 
@@ -313,7 +318,7 @@ DISTURBANCES = [
 T_BUFFER = 4.0    # [s] extra run-time appended after the last event
 
 # ── Output ───────────────────────────────────────────────────────────────────
-PLOT_MODE       = "root_locus"        # "sim"        → full simulation plots (figs 1–6)
+PLOT_MODE       = "sim"        # "sim"        → full simulation plots (figs 1–6)
                                # "root_locus" → closed-loop pole map only
 PLOT_REFERENCE  = True         # show reference trajectory lines  (sim mode only)
 PLOT_ACTUAL     = True         # show actual (controller) trajectory lines (sim mode only)
@@ -373,12 +378,7 @@ _gains = {
         att_Ki    = np.array([0.05, 0.05, 0.02]),
         att_Kd    = np.array([2.0,  2.0,  1.2]),
         att_i_lim = np.array([0.5,  0.5,  0.3]),
-        pos_Kp    = np.array([1.8,  1.8,  2.5]),
-        pos_Ki    = np.array([0.08, 0.08, 0.15]),
-        pos_Kd    = np.array([1.2,  1.2,  1.8]),
-        pos_i_lim = np.array([2.0,  2.0,  3.0]),
         att_lim   = 0.45,
-        # cylindrical gains unused in hold mode but kept for consistent dict structure
         cyl_Kp    = np.array([1.8,  1.8,  2.5]),
         cyl_Ki    = np.array([0.08, 0.08, 0.15]),
         cyl_Kd    = np.array([1.2,  1.2,  1.8]),
@@ -389,10 +389,6 @@ _gains = {
         att_Ki    = np.array([0.02, 0.02, 0.01]),
         att_Kd    = np.array([3.45,  3.4,  1.495]),
         att_i_lim = np.array([0.3,  0.3,  0.2]),
-        pos_Kp    = np.array([1.876,  4.887,  4.73]),
-        pos_Ki    = np.array([0.02, 0.02, 0.05]),
-        pos_Kd    = np.array([2.23,  4.06,  4.08]),
-        pos_i_lim = np.array([1.0,  1.0,  2.0]),
         att_lim   = 0.45,
         # cyl[0]=r  cyl[1]=tangential(arc)  cyl[2]=z
         cyl_Kp    = np.array([1.876, 4.887, 4.73]),
@@ -402,34 +398,26 @@ _gains = {
     ),
     # Spiral: smooth orbit — moderate bandwidth, no excess damping
     "spiral": dict(
-        att_Kp    = np.array([6.0,  6.0,  2.5]),
-        att_Ki    = np.array([0.05, 0.05, 0.02]),
-        att_Kd    = np.array([2.5,  2.5,  1.2]),
-        att_i_lim = np.array([0.5,  0.5,  0.3]),
-        pos_Kp    = np.array([2.0,  2.0,  3.0]),
-        pos_Ki    = np.array([0.05, 0.05, 0.10]),
-        pos_Kd    = np.array([1.5,  1.5,  2.5]),
-        pos_i_lim = np.array([2.0,  2.0,  3.0]),
+        att_Kp    = np.array([15.4,  16.47,  3.117]),
+        att_Ki    = np.array([0.02, 0.02, 0.01]),
+        att_Kd    = np.array([3.328,  3.494 ,  1.523]),
+        att_i_lim = np.array([0.3,  0.3,  0.2]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([2.0,  2.0,  3.0]),
-        cyl_Ki    = np.array([0.05, 0.05, 0.10]),
-        cyl_Kd    = np.array([1.5,  1.5,  2.5]),
-        cyl_i_lim = np.array([2.0,  2.0,  3.0]),
+        cyl_Kp    = np.array([1.917 , 4.804, 4.919]),
+        cyl_Ki    = np.array([0.02,  0.02,  0.05]),
+        cyl_Kd    = np.array([2.232,  4.076,  4.072]),
+        cyl_i_lim = np.array([1.0,   1.0,   2.0]),
     ),
     # Lawnmower: hard vertical reversals — strong z damping, fast attitude response
     "lawnmower": dict(
-        att_Kp    = np.array([16.43,  16.32,  3.0]),
+        att_Kp    = np.array([15.4,  16.47,  3.117]),
         att_Ki    = np.array([0.02, 0.02, 0.01]),
-        att_Kd    = np.array([3.45,  3.4,  1.495]),
+        att_Kd    = np.array([3.328,  3.494 ,  1.523]),
         att_i_lim = np.array([0.3,  0.3,  0.2]),
-        pos_Kp    = np.array([1.876,  4.887,  4.73]),
-        pos_Ki    = np.array([0.02, 0.02, 0.05]),
-        pos_Kd    = np.array([2.23,  4.06,  4.08]),
-        pos_i_lim = np.array([1.0,  1.0,  2.0]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([1.876, 4.887, 4.73]),
+        cyl_Kp    = np.array([1.917 , 4.804, 4.919]),
         cyl_Ki    = np.array([0.02,  0.02,  0.05]),
-        cyl_Kd    = np.array([2.23,  4.06,  4.08]),
+        cyl_Kd    = np.array([2.232,  4.076,  4.072]),
         cyl_i_lim = np.array([1.0,   1.0,   2.0]),
     ),
 }
@@ -442,12 +430,8 @@ att_Kp    = _g["att_Kp"]
 att_Ki    = _g["att_Ki"]
 att_Kd    = _g["att_Kd"]
 att_i_lim = _g["att_i_lim"]
-pos_Kp    = _g["pos_Kp"]
-pos_Ki    = _g["pos_Ki"]
-pos_Kd    = _g["pos_Kd"]
-pos_i_lim = _g["pos_i_lim"]
 att_lim   = _g["att_lim"]
-# Cylindrical outer loop gains — [r, tangential(arc), z]
+# Outer loop gains — [r/x, tangential/y, z]  (used for both Cartesian and cylindrical PID)
 cyl_Kp    = _g["cyl_Kp"]
 cyl_Ki    = _g["cyl_Ki"]
 cyl_Kd    = _g["cyl_Kd"]
@@ -460,26 +444,29 @@ print(f"PID gains       : {_flight_mode} set")
 # ══════════════════════════════════════════════════════════════════════════════
 # X config — arms at 45°, tower between front-left (1) and front-right (2):
 #
-#   FL(1)  FR(2)        CCW: 1, 3   CW: 2, 4
+#   FL(1)  FR(2)        CCW: 1, 4 (diagonal)   CW: 2, 3 (diagonal)
 #     \   /
 #      \ /
 #      / \
 #     /   \
 #   RL(3)  RR(4)
 #
-# Effective moment arm perpendicular to each axis = l / sqrt(2)
+# Yaw torque comes from DIAGONAL pairs (FL+RR vs FR+RL).
+# Same-side spin (CCW:1,3 / CW:2,4) would make tau_psi row identical to
+# tau_phi row → singular matrix.  Diagonal spin avoids this.
+#
 # Derived from r_i × F_i where F_i = kT·ωi² in body z:
-#   τ_φ   = kT·Σ(y_i·ωi²) = (l/√2)·kT·(+ω1² − ω2² + ω3² − ω4²)
-#   τ_θ   = kT·Σ(-x_i·ωi²) = (l/√2)·kT·(−ω1² − ω2² + ω3² + ω4²)
-#   τ_ψ   = kQ·(ω1² − ω2² + ω3² − ω4²)   [CCW 1,3 positive / CW 2,4 negative]
+#   τ_φ   = (l/√2)·kT·(+ω1² − ω2² + ω3² − ω4²)   sign: [+,−,+,−]
+#   τ_θ   = (l/√2)·kT·(−ω1² − ω2² + ω3² + ω4²)   sign: [−,−,+,+]
+#   τ_ψ   = kQ·(+ω1² − ω2² − ω3² + ω4²)           sign: [+,−,−,+]  ← diagonal pairs
 
 _lx = p.l / np.sqrt(2) * p.kT   # effective moment arm
 
 A_mix = np.array([
     [ p.kT,  p.kT,  p.kT,  p.kT ],
-    [ _lx,  -_lx,   _lx,  -_lx  ],   # tau_phi:   (l/√2)·kT·(+ω1²−ω2²+ω3²−ω4²)
-    [-_lx,  -_lx,   _lx,   _lx  ],   # tau_theta: (l/√2)·kT·(−ω1²−ω2²+ω3²+ω4²)
-    [ p.kQ, -p.kQ,  p.kQ, -p.kQ ],   # tau_psi
+    [ _lx,  -_lx,   _lx,  -_lx  ],   # tau_phi:   [+,−,+,−]
+    [-_lx,  -_lx,   _lx,   _lx  ],   # tau_theta: [−,−,+,+]
+    [ p.kQ, -p.kQ, -p.kQ,  p.kQ ],   # tau_psi:   [+,−,−,+]  diagonal pairs
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -584,8 +571,8 @@ def _aerial_timed_waypoints():
         else:
             v_scan = v_max
 
-        v_vert  = v_scan   # speed along vertical strips
-        v_horiz = v_max    # speed of horizontal steps between strips
+        v_vert  = v_scan                              # speed along vertical strips
+        v_horiz = float(air_config.get("v_horiz", v_max))  # horizontal step speed
 
         w_arc_step = w_arc_a * (1.0 - ca["h_overlap"])
         za, ta = get_lawnmower_coords(H_water, H_total, R_base, w_arc_step)
@@ -616,23 +603,51 @@ def _aerial_timed_waypoints():
     ra = np.array([get_radius(z) for z in za]) + D   # standoff radius
     z_norm = za - H_water                             # z=0 at sea level
 
-    # Velocity direction from path tangent; classify vertical vs horizontal
-    # Cartesian tangent only used for direction classification, not stored
+    # ── Trapezoidal speed profiling — speed magnitude along path arc ──────────
+    # Direction of travel is always path tangent; individual cylindrical
+    # components (ṙ, θ̇, ż) are just projections and inherit the same profile.
     xyz_tmp = np.column_stack([ra * np.cos(ta), ra * np.sin(ta), z_norm])
-    vr_arr  = np.zeros(len(za))
-    vθ_arr  = np.zeros(len(za))
-    vz_arr  = np.zeros(len(za))
+    N_pts   = len(za)
+    dists   = np.array([np.linalg.norm(xyz_tmp[i+1] - xyz_tmp[i])
+                        for i in range(N_pts - 1)])
 
-    for i in range(len(za) - 1):
-        dv   = xyz_tmp[i + 1] - xyz_tmp[i]
-        dist = np.linalg.norm(dv)
-        if dist < 1e-10:
+    # Classify each non-zero gap: 0 = vertical strip, 1 = horizontal turn
+    gap_type = np.full(N_pts - 1, -1, dtype=int)
+    for i in range(N_pts - 1):
+        if dists[i] > 1e-10:
+            vf = abs(xyz_tmp[i+1, 2] - xyz_tmp[i, 2]) / dists[i]
+            gap_type[i] = 0 if vf > 0.7 else 1
+
+    # Apply trap_speeds to each contiguous segment of the same type
+    speed_arr = np.zeros(N_pts)
+    i = 0
+    while i < N_pts - 1:
+        while i < N_pts - 1 and gap_type[i] == -1:   # skip zero-length junctions
+            i += 1
+        if i >= N_pts - 1:
+            break
+        seg_t = gap_type[i]
+        v_cru = v_vert if seg_t == 0 else v_horiz
+        j = i
+        while j < N_pts - 1 and gap_type[j] == seg_t:
+            j += 1
+        # Segment covers waypoints i..j; trap_speeds profiles speed magnitude
+        s_arr = arc_lengths(xyz_tmp[i:j+1])
+        speeds, _ = trap_speeds(s_arr, v_cru, TRAJ_ACCEL_MAX)
+        speed_arr[i:j+1] = speeds
+        i = j
+
+    # Velocity vectors: direction from path tangent × speed magnitude
+    vr_arr = np.zeros(N_pts)
+    vθ_arr = np.zeros(N_pts)
+    vz_arr = np.zeros(N_pts)
+    for i in range(N_pts - 1):
+        if dists[i] < 1e-10:
             continue
-        vert_frac = abs(dv[2]) / dist
-        speed     = v_vert if vert_frac > 0.7 else v_horiz
-        vx_i = (dv[0] / dist) * speed
-        vy_i = (dv[1] / dist) * speed
-        vz_i = (dv[2] / dist) * speed
+        dv   = xyz_tmp[i+1] - xyz_tmp[i]
+        vx_i = (dv[0] / dists[i]) * speed_arr[i]
+        vy_i = (dv[1] / dists[i]) * speed_arr[i]
+        vz_i = (dv[2] / dists[i]) * speed_arr[i]
         r_i  = max(ra[i], 1e-6)
         θ_i  = ta[i]
         vr_arr[i]  =  vx_i * np.cos(θ_i) + vy_i * np.sin(θ_i)
@@ -643,17 +658,15 @@ def _aerial_timed_waypoints():
     vθ_arr[-1] = vθ_arr[-2]
     vz_arr[-1] = vz_arr[-2]
 
-    # ── Timestamps from arc-length and speeds ─────────────────────────────────
+    # ── Timestamps: trapezoidal rule over speed profile ───────────────────────
     times = [0.0]
-    for i in range(1, len(za)):
-        dv   = xyz_tmp[i] - xyz_tmp[i - 1]
-        dist = np.linalg.norm(dv)
-        if dist < 1e-10:
+    for i in range(1, N_pts):
+        d = dists[i-1]
+        if d < 1e-10:
             times.append(times[-1])
             continue
-        vert_frac = abs(dv[2]) / dist
-        speed     = v_vert if vert_frac > 0.7 else v_horiz
-        times.append(times[-1] + dist / speed)
+        v_avg = max((speed_arr[i-1] + speed_arr[i]) / 2, 1e-6)
+        times.append(times[-1] + d / v_avg)
 
     times = np.array(times)
     return np.column_stack([times, ra, ta, z_norm, vr_arr, vθ_arr, vz_arr])
@@ -701,7 +714,7 @@ def get_disturbance(t_k):
 # SIMULATION SETUP
 # ══════════════════════════════════════════════════════════════════════════════
 
-dt = 0.005   # [s]  timestep (200 Hz)
+dt = 0.05   # [s]  timestep (200 Hz)
 
 # Determine simulation end time from all configured events
 _t_events = [T_BUFFER]
@@ -748,11 +761,16 @@ elif TRAJ_MODE == "test_time_air":
 else:
     raise ValueError(f"Unknown TRAJ_MODE: '{TRAJ_MODE}'")
 
-ref_yaw = np.zeros(N)
-
 # Cylindrical reference is used for custom (ndarray) and test_time_air modes
 _USE_CYL_REF = TRAJ_MODE in ("custom", "test_time_air") and isinstance(
     TRAJ_SEGMENTS if TRAJ_MODE == "custom" else True, (np.ndarray, bool))
+
+# Face inward: drone nose points toward tower centre (origin) at all times.
+# In cylindrical coords the outward direction is θ, so facing inward = θ + π.
+if _USE_CYL_REF:
+    ref_yaw = np.arctan2(np.sin(ref_pos[1, :] + np.pi), np.cos(ref_pos[1, :] + np.pi))
+else:
+    ref_yaw = np.zeros(N)
 
 # Acceleration feedforward — includes centripetal terms when in cylindrical mode
 if _USE_CYL_REF:
@@ -827,7 +845,7 @@ def quad_ode(s, wr_cmd, Fd, taud):
     T         = u_actual[0]
     tau_body  = u_actual[1:4] + taud
 
-    Omega_net = wr[0] - wr[1] + wr[2] - wr[3]
+    Omega_net = wr[0] - wr[1] - wr[2] + wr[3]   # diagonal pairs: CCW 1,4 / CW 2,3
     tau_gyro  = p.Jr * Omega_net * np.array([-wb[1], wb[0], 0.0])
 
     F_thrust  = R @ np.array([0, 0, T])
@@ -870,7 +888,11 @@ int_pos = np.zeros(3)
 U_log  = np.zeros((4, N))   # [T, τ_φ, τ_θ, τ_ψ]
 Wr_log = np.zeros((4, N))   # commanded rotor speeds
 
-for k in (range(N - 1) if PLOT_MODE != "root_locus" else []):
+_sim_iter = range(N - 1) if PLOT_MODE != "root_locus" else []
+if tqdm is not None and PLOT_MODE != "root_locus":
+    _sim_iter = tqdm(_sim_iter, desc="Simulating", unit="step",
+                     mininterval=5, dynamic_ncols=True)
+for k in _sim_iter:
     s     = X[:, k]
     pos   = s[0:3]
     euler = s[3:6];  phi, theta, psi = euler
@@ -922,8 +944,8 @@ for k in (range(N - 1) if PLOT_MODE != "root_locus" else []):
         # Cartesian PID (hold mode)
         e_pos = ref_pos[:, k] - pos
         e_vel = ref_vel[:, k] - vel
-        int_pos = np.clip(int_pos + e_pos * dt, -pos_i_lim, pos_i_lim)
-        a_cmd = pos_Kp * e_pos + pos_Ki * int_pos + pos_Kd * e_vel + ref_acc[:, k]
+        int_pos = np.clip(int_pos + e_pos * dt, -cyl_i_lim, cyl_i_lim)
+        a_cmd = cyl_Kp * e_pos + cyl_Ki * int_pos + cyl_Kd * e_vel + ref_acc[:, k]
 
     T_cmd = max(p.m * (a_cmd[2] + p.g), 0.1 * p.m * p.g)
 
@@ -1037,6 +1059,20 @@ def build_K_cl(pKp, pKi, pKd, aKp, aKi, aKd):
     # Linearise mixing: dw_cmd = (1/(2*wh)) * A_mix_inv @ du_virt
     return (1.0 / (2.0 * wh)) * np.linalg.inv(A_mix) @ Kv
 
+# ── Convert cylindrical ref to Cartesian for plotting and error analysis ─────
+if _USE_CYL_REF:
+    _r  = ref_pos[0];  _θ = ref_pos[1]
+    _ṙ  = ref_vel[0];  _θ̇ = ref_vel[1]
+    ref_pos_cart = np.array([_r * np.cos(_θ),
+                              _r * np.sin(_θ),
+                              ref_pos[2]])
+    ref_vel_cart = np.array([_ṙ * np.cos(_θ) - _r * _θ̇ * np.sin(_θ),
+                              _ṙ * np.sin(_θ) + _r * _θ̇ * np.cos(_θ),
+                              ref_vel[2]])
+else:
+    ref_pos_cart = ref_pos
+    ref_vel_cart = ref_vel
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ANALYSIS OUTPUT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1070,31 +1106,43 @@ if PLOT_MODE == "sim" and DIST_ENABLED and DISTURBANCES:
             print(f"\nPEAK POSITION DEVIATION DURING GUST")
             print(f"  dx={dev[0]:.3f} m  dy={dev[1]:.3f} m  dz={dev[2]:.3f} m")
 
-# ── Convert cylindrical ref to Cartesian for plotting and error analysis ─────
-if _USE_CYL_REF:
-    _r  = ref_pos[0];  _θ = ref_pos[1]
-    _ṙ  = ref_vel[0];  _θ̇ = ref_vel[1]
-    ref_pos_cart = np.array([_r * np.cos(_θ),
-                              _r * np.sin(_θ),
-                              ref_pos[2]])
-    ref_vel_cart = np.array([_ṙ * np.cos(_θ) - _r * _θ̇ * np.sin(_θ),
-                              _ṙ * np.sin(_θ) + _r * _θ̇ * np.cos(_θ),
-                              ref_vel[2]])
-else:
-    ref_pos_cart = ref_pos
-    ref_vel_cart = ref_vel
-
 # ── Tracking error summary (sim mode only) ────────────────────────────────────
 if PLOT_MODE == "sim":
-    pos_err_vec = X[0:3, :] - ref_pos_cart
-    vel_err_vec = X[6:9, :] - ref_vel_cart
-    pos_err_mag = np.linalg.norm(pos_err_vec, axis=0)
-    vel_err_mag = np.linalg.norm(vel_err_vec, axis=0)
-    print(f"\n{'═'*48}")
+    print(f"\n{'═'*56}")
     print("TRACKING ERROR SUMMARY")
-    print(f"{'═'*48}")
-    print(f"  Position  mean={pos_err_mag.mean():.3f} m    max={pos_err_mag.max():.3f} m")
-    print(f"  Velocity  mean={vel_err_mag.mean():.3f} m/s  max={vel_err_mag.max():.3f} m/s")
+    print(f"{'═'*56}")
+    if _USE_CYL_REF:
+        _r_m  = np.maximum(np.sqrt(X[0]**2 + X[1]**2), 1e-6)
+        _θ_m  = np.arctan2(X[1], X[0])
+        _er   = ref_pos[0] - _r_m
+        _eθ   = np.arctan2(np.sin(ref_pos[1] - _θ_m), np.cos(ref_pos[1] - _θ_m))
+        _ez   = ref_pos[2] - X[2]
+        _ṙ_m  =  X[6]*np.cos(_θ_m) + X[7]*np.sin(_θ_m)
+        _θ̇_m  = (-X[6]*np.sin(_θ_m) + X[7]*np.cos(_θ_m)) / _r_m
+        _eṙ   = ref_vel[0] - _ṙ_m
+        _eθ̇   = ref_vel[1] - _θ̇_m
+        _eż   = ref_vel[2] - X[8]
+        print(f"  {'':12s}  {'mean':>10s}   {'max':>10s}")
+        print(f"  {'─'*38}")
+        print(f"  pos r     :  {np.abs(_er).mean():>10.3f} m    {np.abs(_er).max():>10.3f} m")
+        print(f"  pos θ     :  {np.abs(_eθ).mean():>10.4f} rad  {np.abs(_eθ).max():>10.4f} rad")
+        print(f"  pos z     :  {np.abs(_ez).mean():>10.3f} m    {np.abs(_ez).max():>10.3f} m")
+        print(f"  {'─'*38}")
+        print(f"  vel ṙ     :  {np.abs(_eṙ).mean():>10.3f} m/s  {np.abs(_eṙ).max():>10.3f} m/s")
+        print(f"  vel θ̇     :  {np.abs(_eθ̇).mean():>10.4f} r/s  {np.abs(_eθ̇).max():>10.4f} r/s")
+        print(f"  vel ż     :  {np.abs(_eż).mean():>10.3f} m/s  {np.abs(_eż).max():>10.3f} m/s")
+    else:
+        _ep = ref_pos_cart - X[0:3]
+        _ev = ref_vel_cart - X[6:9]
+        print(f"  {'':12s}  {'mean':>10s}   {'max':>10s}")
+        print(f"  {'─'*38}")
+        print(f"  pos x     :  {np.abs(_ep[0]).mean():>10.3f} m    {np.abs(_ep[0]).max():>10.3f} m")
+        print(f"  pos y     :  {np.abs(_ep[1]).mean():>10.3f} m    {np.abs(_ep[1]).max():>10.3f} m")
+        print(f"  pos z     :  {np.abs(_ep[2]).mean():>10.3f} m    {np.abs(_ep[2]).max():>10.3f} m")
+        print(f"  {'─'*38}")
+        print(f"  vel x     :  {np.abs(_ev[0]).mean():>10.3f} m/s  {np.abs(_ev[0]).max():>10.3f} m/s")
+        print(f"  vel y     :  {np.abs(_ev[1]).mean():>10.3f} m/s  {np.abs(_ev[1]).max():>10.3f} m/s")
+        print(f"  vel z     :  {np.abs(_ev[2]).mean():>10.3f} m/s  {np.abs(_ev[2]).max():>10.3f} m/s")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLOTS
@@ -1179,7 +1227,7 @@ elif PLOT_MODE == "root_locus":
     ax_out.legend(loc='upper right', fontsize=8)
 
     # ── Refresh helpers ───────────────────────────────────────────────────────
-    def _lims(ax, *pole_sets):
+    def _set_initial_lims(ax, *pole_sets):
         r  = np.concatenate([p.real for p in pole_sets])
         im = np.concatenate([p.imag for p in pole_sets])
         pr = max(abs(r).max()  * 0.15, 1.0)
@@ -1190,23 +1238,23 @@ elif PLOT_MODE == "root_locus":
     def _refresh_inner():
         ip = _inner_poles()
         sc_in.set_offsets(np.column_stack([ip.real, ip.imag]))
-        _lims(ax_in, ol_poles, ip)
         # Outer plot reference (grey) also updates when att gains change
         icp = np.linalg.eigvals(_A_inner_cl())
         sc_ref.set_offsets(np.column_stack([icp.real, icp.imag]))
         fp = _full_poles()
         sc_out.set_offsets(np.column_stack([fp.real, fp.imag]))
-        _lims(ax_out, icp, fp)
         fig_rl.canvas.draw_idle()
 
     def _refresh_outer():
         fp = _full_poles()
         sc_out.set_offsets(np.column_stack([fp.real, fp.imag]))
-        icp = np.linalg.eigvals(_A_inner_cl())
-        _lims(ax_out, icp, fp)
         fig_rl.canvas.draw_idle()
 
     _refresh_inner()
+
+    # Fix axes to initial limits so poles moving off-screen don't cause jumps
+    _set_initial_lims(ax_in,  ol_poles, ip0)
+    _set_initial_lims(ax_out, icp0,     fp0)
 
     # ── Sliders ───────────────────────────────────────────────────────────────
     # Layout: 2 rows (Kp top, Kd bottom) × 3 columns per side
@@ -1232,9 +1280,9 @@ elif PLOT_MODE == "root_locus":
             for gname, garr, y_row in [('Kp', Kp_arr, y_kp), ('Kd', Kd_arr, y_kd)]:
                 ax_sl = fig_rl.add_axes([x_col, y_row, SL_W, SL_H])
                 v0    = float(garr[ci])
-                vmax  = max(v0 * 4.0, 2.0)
+                vmax  = max(v0 * 1.5, 2.0)
                 sl    = Slider(ax_sl, lbls[ci], 0.0, vmax,
-                               valinit=v0, color=cols[ci])
+                               valinit=v0, valstep=vmax/500, color=cols[ci])
                 # Anchor label inside the axes so wide text can't bleed left
                 sl.label.set_fontsize(11)
                 sl.label.set_position((0.03, 0.5))
@@ -1502,7 +1550,15 @@ else:  # PLOT_MODE == "sim"
             ax6.plot_surface(_xr, _yr, _zr, color='gold', alpha=0.25, edgecolor='none')
 
     if PLOT_REFERENCE:
-        ax6.plot(rp_p[0, :], rp_p[1, :], rp_p[2, :],
+        if TRAJ_MODE == "test_time_air":
+            # Plot directly from raw waypoints — same approach as Test_time,
+            # avoids decimation artefacts that make turns look shark-fin shaped
+            _rx = _wp[:, 1] * np.cos(_wp[:, 2])
+            _ry = _wp[:, 1] * np.sin(_wp[:, 2])
+            _rz = _wp[:, 3]
+        else:
+            _rx, _ry, _rz = rp_p[0, :], rp_p[1, :], rp_p[2, :]
+        ax6.plot(_rx, _ry, _rz,
                  color='red', lw=1.8, ls='--', label='Reference', zorder=5)
     if PLOT_ACTUAL:
         ax6.plot(X_p[0, :], X_p[1, :], X_p[2, :],
@@ -1515,9 +1571,9 @@ else:  # PLOT_MODE == "sim"
     ax6.legend(loc='upper left')
 
     if TRAJ_MODE == "test_time_air":
-        all_x = np.concatenate([rp_p[0, :], X_p[0, :]])
-        all_y = np.concatenate([rp_p[1, :], X_p[1, :]])
-        all_z = np.concatenate([rp_p[2, :], X_p[2, :]])
+        all_x = np.concatenate([_rx, X_p[0, :]])
+        all_y = np.concatenate([_ry, X_p[1, :]])
+        all_z = np.concatenate([_rz, X_p[2, :]])
         x_mid = (all_x.max() + all_x.min()) / 2
         y_mid = (all_y.max() + all_y.min()) / 2
         z_mid = (all_z.max() + all_z.min()) / 2

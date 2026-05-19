@@ -67,21 +67,24 @@ cameras = {"RGB": rgb_camera, "EVENT": event_camera, "HYPERSPECTRAL": hyperspect
 water_config = {
     "camera_type": "RGB",
     "flight_mode": "lawnmower",
-    "v_max": 1,
+    "v_max":   5,    # [m/s] max vertical scan speed (camera limits may reduce further)
+    "v_horiz": 0.2,    # [m/s] horizontal step speed between strips (no camera constraint)
 }
 
 # AIR PROFILE  ← quadcopterSC.py imports this
 air_config = {
     "camera_type": "RGB",
     "flight_mode": "lawnmower",
-    "v_max": 1,
+    "v_max":   5,    # [m/s] max vertical scan speed (camera limits may reduce further)
+    "v_horiz": 0.2,    # [m/s] horizontal step speed between strips (no camera constraint)
 }
 
 # TURBINE PROFILE
 turbine_config = {
     "camera_type": "RGB",
     "flight_mode": "lawnmower",
-    "v_max": 1,
+    "v_max":   5,    # [m/s] max vertical scan speed (camera limits may reduce further)
+    "v_horiz": 0.2,    # [m/s] horizontal step speed between strips (no camera constraint)
 }
 
 transition_penalty_seconds = 45.0
@@ -109,8 +112,8 @@ if __name__ == "__main__":
 
         nstrips_w  = math.ceil((2 * math.pi * R_base) / (w_arc_w * (1 - cw["h_overlap"])))
         spacing_w  = (2 * math.pi * R_base) / nstrips_w
-        t_water = time_lawnmower(dist_w["vertical"], dist_w["horizontal"], v_vert, water_config["v_max"])
-        water_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_max={water_config['v_max']:.3f} m/s"
+        t_water = time_lawnmower(dist_w["vertical"], dist_w["horizontal"], v_vert, water_config["v_horiz"])
+        water_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_horiz={water_config['v_horiz']:.3f} m/s"
         water_dist_str = f"vert={dist_w['vertical']:.1f}m, horiz={dist_w['horizontal']:.1f}m, spacing={spacing_w:.3f}m, n_strips={nstrips_w}"
 
     elif water_config["flight_mode"] == "spiral":
@@ -150,8 +153,8 @@ if __name__ == "__main__":
 
         nstrips_a  = math.ceil((2 * math.pi * R_base) / (w_arc_a * (1 - ca["h_overlap"])))
         spacing_a  = (2 * math.pi * R_base) / nstrips_a
-        t_air = time_lawnmower(total_vert_air, total_horiz_air, v_vert, air_config["v_max"])
-        air_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_max={air_config['v_max']:.3f} m/s"
+        t_air = time_lawnmower(total_vert_air, total_horiz_air, v_vert, air_config["v_horiz"])
+        air_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_horiz={air_config['v_horiz']:.3f} m/s"
         air_dist_str = f"vert={total_vert_air:.1f}m, horiz={total_horiz_air:.1f}m, spacing={spacing_a:.3f}m, n_strips={nstrips_a}"
 
     elif air_config["flight_mode"] == "spiral":
@@ -189,8 +192,8 @@ if __name__ == "__main__":
 
         nstrips_t  = math.ceil((2 * math.pi * R_blade) / (w_arc_t * (1 - ct["h_overlap"])))
         spacing_t  = (2 * math.pi * R_blade) / nstrips_t
-        t_turbine = 3 * time_lawnmower(dist_t["vertical"], dist_t["horizontal"], v_vert, turbine_config["v_max"])
-        turbine_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_max={turbine_config['v_max']:.3f} m/s"
+        t_turbine = 3 * time_lawnmower(dist_t["vertical"], dist_t["horizontal"], v_vert, turbine_config["v_horiz"])
+        turbine_vel_str  = f"v_scan={v_vert:.3f} m/s [{limit}], v_horiz={turbine_config['v_horiz']:.3f} m/s"
         turbine_dist_str = f"vert={3*dist_t['vertical']:.1f}m, horiz={3*dist_t['horizontal']:.1f}m, spacing={spacing_t:.3f}m, n_strips={nstrips_t} (3 blades)"
 
     elif turbine_config["flight_mode"] == "spiral":

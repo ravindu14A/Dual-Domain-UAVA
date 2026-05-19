@@ -124,16 +124,16 @@ def get_lawnmower_coords(z_start, z_end, R_max, w_arc, theta_start=0.0):
         theta_coords.extend([current_theta] * 30)
         next_theta = current_theta + d_theta
         # Translate Across Top
-        z_coords.extend([z_end] * 5)
-        theta_coords.extend(np.linspace(current_theta, next_theta, 5))
+        z_coords.extend([z_end] * 30)
+        theta_coords.extend(np.linspace(current_theta, next_theta, 30))
         current_theta = next_theta
         # Fly Down
         z_coords.extend(np.linspace(z_end, z_start, 30))
         theta_coords.extend([current_theta] * 30)
         # Translate Across Bottom
         next_theta = current_theta + d_theta
-        z_coords.extend([z_start] * 5)
-        theta_coords.extend(np.linspace(current_theta, next_theta, 5))
+        z_coords.extend([z_start] * 30)
+        theta_coords.extend(np.linspace(current_theta, next_theta, 30))
         current_theta = next_theta
 
     return z_coords, theta_coords
@@ -186,14 +186,17 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
 
-    # 1. Plot Tower Surface
-    z_surf = np.linspace(0, H_total, 50)
-    theta_surf = np.linspace(0, 2 * np.pi, 50)
-    theta_grid, z_grid = np.meshgrid(theta_surf, z_surf)
-    r_grid = np.vectorize(get_radius)(z_grid)
-    x_grid = r_grid * np.cos(theta_grid)
-    y_grid = r_grid * np.sin(theta_grid)
-    ax.plot_surface(x_grid, y_grid, z_grid, color='silver', alpha=0.3, edgecolor='none')
+    # 1. Plot Tower Surface — cylinder and truncated cone as separate surfaces
+    theta_surf = np.linspace(0, 2 * np.pi, 60)
+    # Monopile cylinder: seafloor to top of cylindrical section
+    _THc, _Zc = np.meshgrid(theta_surf, np.linspace(0, H_water + H_air_cyl, 30))
+    ax.plot_surface(R_base * np.cos(_THc), R_base * np.sin(_THc), _Zc,
+                    color='silver', alpha=0.3, edgecolor='none')
+    # Tapered tower cone: cylindrical section top to tower top
+    _THt, _Zt = np.meshgrid(theta_surf, np.linspace(H_water + H_air_cyl, H_total, 50))
+    _Rt = R_base + (R_top - R_base) * (_Zt - (H_water + H_air_cyl)) / H_air_cone
+    ax.plot_surface(_Rt * np.cos(_THt), _Rt * np.sin(_THt), _Zt,
+                    color='silver', alpha=0.3, edgecolor='none')
 
     # 2. Plot Sea Level Plane
     x_sea, y_sea = np.meshgrid(np.linspace(-R_base*2, R_base*2, 2), np.linspace(-R_base*2, R_base*2, 2))
@@ -210,7 +213,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
         zw, tw = get_lawnmower_coords(0, H_water, R_base, w_arc_w * (1 - cw["h_overlap"]))
     else:
         zw, tw = get_spiral_coords(0, H_water, v_frame_w * (1 - cw["v_overlap"]))
-    rw = np.array([get_radius(z) for z in zw])
+    rw = np.array([get_radius(z) + cw["D"] for z in zw])
     ax.plot(rw*np.cos(tw), rw*np.sin(tw), zw, color='blue', linewidth=1.5, label=f'Water Phase ({water_config["flight_mode"]})')
 
     theta_at_waterline = tw[-1]
@@ -220,7 +223,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
         za, ta = get_lawnmower_coords(H_water, H_total, R_base, w_arc_a * (1 - ca["h_overlap"]), theta_start=theta_at_waterline)
     else:
         za, ta = get_spiral_coords(H_water, H_total, v_frame_a * (1 - ca["v_overlap"]), theta_start=theta_at_waterline)
-    ra = np.array([get_radius(z) for z in za])
+    ra = np.array([get_radius(z) + ca["D"] for z in za])
     ax.plot(ra*np.cos(ta), ra*np.sin(ta), za, color='red', linewidth=1.5, label=f'Air Phase ({air_config["flight_mode"]})')
 
     # 5. Generate & Plot Turbine (3 Blades) Path & Surfaces
