@@ -319,7 +319,7 @@ DISTURBANCES = [
 T_BUFFER = 4.0    # [s] extra run-time appended after the last event
 
 # ── Output ───────────────────────────────────────────────────────────────────
-PLOT_MODE       = "root_locus"        # "sim"        → full simulation plots (figs 1–6)
+PLOT_MODE       = "sim"        # "sim"        → full simulation plots (figs 1–6)
                                # "root_locus" → closed-loop pole map only
 PLOT_REFERENCE  = True         # show reference trajectory lines  (sim mode only)
 PLOT_ACTUAL     = True         # show actual (controller) trajectory lines (sim mode only)
@@ -352,8 +352,23 @@ class Params:
         return np.sqrt(self.m * self.g / (4 * self.kT))
 
 p = Params()
-print(f"[geometry]  m={p.m:.3f} kg  |  l={p.l:.3f} m  |  Ixx={p.Ixx:.4f}  Iyy={p.Iyy:.4f}  Izz={p.Izz:.4f}  kg·m²")
-print(f"[hover]     w={p.omega_h:.1f} rad/s  ({p.omega_h * 60 / (2*np.pi):.0f} RPM)")
+print("=" * 55)
+print("  VEHICLE PHYSICAL PARAMETERS")
+print("=" * 55)
+print(f"  {'m':<6}  Total mass                   {p.m:.4f}   kg")
+print(f"  {'Ixx':<6}  Roll inertia                 {p.Ixx:.4f}   kg·m²")
+print(f"  {'Iyy':<6}  Pitch inertia                {p.Iyy:.4f}   kg·m²")
+print(f"  {'Izz':<6}  Yaw inertia                  {p.Izz:.4f}   kg·m²")
+print(f"  {'Ixz':<6}  XZ product of inertia        {p.Ixz:.4f}   kg·m²")
+print(f"  {'l':<6}  Arm length (CoM→rotor)       {p.l:.4f}   m")
+print(f"  {'kT':<6}  Thrust coefficient           {p.kT:.2e}  N·s²/rad²")
+print(f"  {'kQ':<6}  Torque coefficient           {p.kQ:.2e}  N·m·s²/rad²")
+print(f"  {'tau_m':<6}  Motor time constant          {p.tau_m:.4f}   s")
+print(f"  {'kd':<6}  Translational drag coeff     {p.kd:.4f}   N·s/m")
+print(f"  {'Jr':<6}  Rotor spin inertia           {p.Jr:.4f}   kg·m²  (inactive)")
+print(f"  {'w_max':<6}  Rotor speed saturation       {p.omega_max:.2f}   rad/s  ({p.omega_max*60/2/np.pi:.0f} RPM)")
+print(f"  {'w_h':<6}  Hover rotational velocity    {p.omega_h:.2f}   rad/s  ({p.omega_h*60/2/np.pi:.0f} RPM)")
+print("=" * 55)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PID GAINS  —  one set per trajectory mode
@@ -375,50 +390,51 @@ _gains = {
     #   r  = standoff distance  [m]        — radial
     #   t  = arc-length tangential [m]     — r·e_θ keeps units consistent with r
     #   z  = height             [m]
-    # ── Root-locus tuned gains (from image, all modes share same starting point) ──
+    # ── Physics-based gains: wn=2.3 rad/s (phi/theta), 1.1 rad/s (psi), zeta=0.85/0.90 ──
+    # Outer: wn=0.5 rad/s (r/t), 1.0 rad/s (z), zeta=0.8  — separation 4.6x ──
     "hold": dict(
-        att_Kp    = np.array([65.3,  96.4,  37.9 ]),
-        att_Ki    = np.array([0.5,   0.5,   0.2  ]),
-        att_Kd    = np.array([52.95, 77.6,  64.32]),
-        att_i_lim = np.array([5.0,   5.0,   3.0  ]),
+        att_Kp    = np.array([67.0, 97.0, 37.0]),
+        att_Ki    = np.array([0.3,  0.3,  0.1 ]),
+        att_Kd    = np.array([50.0, 71.0, 60.0]),
+        att_i_lim = np.array([10.0, 10.0, 5.0 ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.604, 0.588, 1.168]),
-        cyl_Ki    = np.array([0.05,  0.05,  0.10 ]),
-        cyl_Kd    = np.array([1.064, 1.06,  2.098]),
-        cyl_i_lim = np.array([2.0,   2.0,   3.0  ]),
+        cyl_Kp    = np.array([0.25, 0.25, 1.00]),
+        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
+        cyl_Kd    = np.array([0.80, 0.80, 1.60]),
+        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
     "custom": dict(
-        att_Kp    = np.array([65.3,  96.4,  37.9 ]),
-        att_Ki    = np.array([0.5,   0.5,   0.2  ]),
-        att_Kd    = np.array([52.95, 77.6,  64.32]),
-        att_i_lim = np.array([5.0,   5.0,   3.0  ]),
+        att_Kp    = np.array([67.0, 97.0, 37.0]),
+        att_Ki    = np.array([0.3,  0.3,  0.1 ]),
+        att_Kd    = np.array([50.0, 71.0, 60.0]),
+        att_i_lim = np.array([10.0, 10.0, 5.0 ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.604, 0.588, 1.168]),
-        cyl_Ki    = np.array([0.05,  0.05,  0.10 ]),
-        cyl_Kd    = np.array([1.064, 1.06,  2.098]),
-        cyl_i_lim = np.array([2.0,   2.0,   3.0  ]),
+        cyl_Kp    = np.array([0.25, 0.25, 1.00]),
+        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
+        cyl_Kd    = np.array([0.80, 0.80, 1.60]),
+        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
     "spiral": dict(
-        att_Kp    = np.array([65.3,  96.4,  37.9 ]),
-        att_Ki    = np.array([0.5,   0.5,   0.2  ]),
-        att_Kd    = np.array([52.95, 77.6,  64.32]),
-        att_i_lim = np.array([5.0,   5.0,   3.0  ]),
+        att_Kp    = np.array([67.0, 97.0, 37.0]),
+        att_Ki    = np.array([0.3,  0.3,  0.1 ]),
+        att_Kd    = np.array([50.0, 71.0, 60.0]),
+        att_i_lim = np.array([10.0, 10.0, 5.0 ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.604, 0.588, 1.168]),
-        cyl_Ki    = np.array([0.05,  0.05,  0.10 ]),
-        cyl_Kd    = np.array([1.064, 1.06,  2.098]),
-        cyl_i_lim = np.array([2.0,   2.0,   3.0  ]),
+        cyl_Kp    = np.array([0.25, 0.25, 1.00]),
+        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
+        cyl_Kd    = np.array([0.80, 0.80, 1.60]),
+        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
     "lawnmower": dict(
-        att_Kp    = np.array([65.3,  96.4,  37.9 ]),
-        att_Ki    = np.array([0.5,   0.5,   0.2  ]),
-        att_Kd    = np.array([52.95, 77.6,  64.32]),
-        att_i_lim = np.array([5.0,   5.0,   3.0  ]),
+        att_Kp    = np.array([67.0, 97.0, 37.0]),
+        att_Ki    = np.array([0.3,  0.3,  0.1 ]),
+        att_Kd    = np.array([50.0, 71.0, 60.0]),
+        att_i_lim = np.array([10.0, 10.0, 5.0 ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.604, 0.588, 1.168]),
-        cyl_Ki    = np.array([0.05,  0.05,  0.10 ]),
-        cyl_Kd    = np.array([1.064, 1.06,  2.098]),
-        cyl_i_lim = np.array([2.0,   2.0,   3.0  ]),
+        cyl_Kp    = np.array([0.25, 0.25, 1.00]),
+        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
+        cyl_Kd    = np.array([0.80, 0.80, 1.60]),
+        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
 }
 
@@ -881,6 +897,7 @@ X[12:16, 0] = p.omega_h   # all rotors at hover speed
 
 if x0_override is not None:
     X[0:3, 0] = x0_override   # start at first trajectory waypoint
+X[5, 0] = ref_yaw[0]           # initialise yaw to match reference — avoids 180° spike at t=0
 
 int_att = np.zeros(3)
 int_pos = np.zeros(3)

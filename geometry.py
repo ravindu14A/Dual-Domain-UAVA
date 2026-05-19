@@ -23,7 +23,7 @@ H_box = 0.6   # [m] height  (z-axis)
 m_box = 22.4    # [kg]
 
 # Arms: 4 thin rods, X-config (45° offsets), emanating from top-centre of box
-L_arm = 3   # [m] arm length (from box centre to motor)
+L_arm = 2   # [m] arm length (from box centre to motor)
 m_arm = 0.15   # [kg] mass of each arm (uniform rod)
 
 # Motors / rotors: point mass at tip of each arm
