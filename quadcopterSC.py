@@ -316,10 +316,10 @@ DISTURBANCES = [
 ]
 
 # ── Simulation timing ─────────────────────────────────────────────────────────
-T_BUFFER = 4.0    # [s] extra run-time appended after the last event
+T_BUFFER = 20   # [s] extra run-time appended after the last event
 
 # ── Output ───────────────────────────────────────────────────────────────────
-PLOT_MODE       = "root_locus"        # "sim"        → full simulation plots (figs 1–6)
+PLOT_MODE       = "sim"        # "sim"        → full simulation plots (figs 1–6)
                                # "root_locus" → closed-loop pole map only
 PLOT_REFERENCE  = True         # show reference trajectory lines  (sim mode only)
 PLOT_ACTUAL     = True         # show actual (controller) trajectory lines (sim mode only)
@@ -397,9 +397,9 @@ _gains = {
         att_Kd    = np.array([38.55, 71.1,  49.32]),
         att_i_lim = np.array([10.0,  10.0,  5.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.244, 0.300, 0.656]),
-        cyl_Ki    = np.array([0.02,  0.02,  0.05 ]),
-        cyl_Kd    = np.array([0.784, 0.904, 1.598]),
+        cyl_Kp    = np.array([0.12,  0.15,  0.33 ]),  # ~50% of traj — no feedforward
+        cyl_Ki    = np.array([0.01,  0.01,  0.02 ]),
+        cyl_Kd    = np.array([0.55,  0.63,  1.12 ]),  # zeta maintained ~0.8
         cyl_i_lim = np.array([5.0,   5.0,   10.0 ]),
     ),
     "custom": dict(
@@ -1159,6 +1159,62 @@ if PLOT_MODE == "sim":
         print(f"  vel x     :  {np.abs(_ev[0]).mean():>10.3f} m/s  {np.abs(_ev[0]).max():>10.3f} m/s")
         print(f"  vel y     :  {np.abs(_ev[1]).mean():>10.3f} m/s  {np.abs(_ev[1]).max():>10.3f} m/s")
         print(f"  vel z     :  {np.abs(_ev[2]).mean():>10.3f} m/s  {np.abs(_ev[2]).max():>10.3f} m/s")
+
+if PLOT_MODE == "sim":
+    # ── Rotor ceiling requirements ─────────────────────────────────────────────
+    def _rpm_sc(w): return w * 60.0 / (2.0 * np.pi)
+
+    _wr  = X[12:16, :]         # actual rotor speeds (4, N), always >= 0
+    _wrc = Wr_log               # commanded (4, N)
+
+    _wr_max  = float(np.max(_wr))
+    _wr_min  = float(np.min(_wr))
+
+    # Angular acceleration from first-order motor model: dw/dt = (w_cmd - w) / tau_m
+    _alpha_r     = np.abs(_wrc[:, :-1] - _wr[:, :-1]) / p.tau_m
+    _alpha_r_max = float(np.max(_alpha_r))
+    _t_hover_to_max = (_wr_max - p.omega_h) / _alpha_r_max if _alpha_r_max > 0 else float('inf')
+    _t_max_to_zero  = _wr_max  / _alpha_r_max if _alpha_r_max > 0 else float('inf')
+    _t_min_to_hover = (p.omega_h - _wr_min) / _alpha_r_max if _alpha_r_max > 0 else float('inf')
+
+    # Thrust, torque, power per rotor
+    _T_max_r   = p.kT * _wr_max**2
+    _T_min_r   = p.kT * _wr_min**2
+    _T_hover_r = p.kT * p.omega_h**2
+    _Q_max_r   = p.kQ * _wr_max**2
+    _Q_hover_r = p.kQ * p.omega_h**2
+    _P_max_r   = p.kQ * _wr_max**3    # P ≈ torque × speed
+    _P_hover_r = p.kQ * p.omega_h**3
+
+    W = 64
+    print(f"\n{'═'*W}")
+    print("  ROTOR CEILING REQUIREMENTS  (motor / ESC sizing)")
+    print(f"{'═'*W}")
+    print(f"  {'Design hover speed':<34}  {p.omega_h:>9.1f} rad/s  ({_rpm_sc(p.omega_h):>6.0f} RPM)")
+    print(f"  {'Saturation limit':<34}  {p.omega_max:>9.1f} rad/s  ({_rpm_sc(p.omega_max):>6.0f} RPM)")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Max speed reached':<34}  {_wr_max:>9.1f} rad/s  ({_rpm_sc(_wr_max):>6.0f} RPM)")
+    print(f"  {'Min speed reached':<34}  {_wr_min:>9.1f} rad/s  ({_rpm_sc(_wr_min):>6.0f} RPM)")
+    print(f"  {'Saturation margin remaining':<34}  {p.omega_max - _wr_max:>9.1f} rad/s  ({_rpm_sc(p.omega_max - _wr_max):>6.0f} RPM)")
+    print(f"  {'Saturation utilisation':<34}  {100*_wr_max/p.omega_max:>9.1f} %")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Max angular acceleration':<34}  {_alpha_r_max:>9.0f} rad/s²")
+    print(f"  {'Time  hover → max speed':<34}  {_t_hover_to_max:>9.3f} s")
+    print(f"  {'Time  max speed → zero':<34}  {_t_max_to_zero:>9.3f} s")
+    print(f"  {'Time  min speed → hover':<34}  {_t_min_to_hover:>9.3f} s")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Max thrust    (per rotor)':<34}  {_T_max_r:>9.2f} N")
+    print(f"  {'Min thrust    (per rotor)':<34}  {_T_min_r:>9.2f} N")
+    print(f"  {'Hover thrust  (per rotor)':<34}  {_T_hover_r:>9.2f} N")
+    print(f"  {'Max total thrust (4 rotors)':<34}  {4*_T_max_r:>9.2f} N")
+    print(f"  {'Hover total thrust':<34}  {4*_T_hover_r:>9.2f} N   (= {p.m*p.g:.1f} N = m·g  ✓)")
+    print(f"  {'Thrust-to-weight ratio (max)':<34}  {4*_T_max_r/(p.m*p.g):>9.2f}")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Max reaction torque  (per rotor)':<34}  {_Q_max_r:>9.4f} N·m")
+    print(f"  {'Hover reaction torque (per rotor)':<34}  {_Q_hover_r:>9.4f} N·m")
+    print(f"  {'Max power estimate   (per rotor)':<34}  {_P_max_r:>9.2f} W   (kQ × w³)")
+    print(f"  {'Hover power estimate  (per rotor)':<34}  {_P_hover_r:>9.2f} W")
+    print(f"{'═'*W}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLOTS

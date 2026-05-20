@@ -38,7 +38,8 @@ UW_ARM_FOLD_FRAC = 0.75
 # B. DERIVED GEOMETRY
 # ==========================================================
 
-# X-config arm angles (motor 0=FR, 1=FL, 2=RL, 3=RR)
+# X-config arm angles (body x=forward, y=left)
+# motor 0=FL (45°), 1=RL (135°), 2=RR (225°), 3=FR (315°)
 arm_angles_deg = [45.0, 135.0, 225.0, 315.0]
 arm_angles_rad = np.radians(arm_angles_deg)
 
@@ -216,8 +217,8 @@ if __name__ == "__main__":
     draw_box(ax, box_com_c[0], box_com_c[1], box_com_c[2], L_box, W_box, H_box,
              color='steelblue', alpha=0.45)
 
-    motor_labels = ['FR', 'FL', 'RL', 'RR']
-    spin_color   = ['tomato', 'royalblue', 'royalblue', 'tomato']  # red=CCW, blue=CW
+    motor_labels = ['FL', 'RL', 'RR', 'FR']
+    spin_color   = ['tomato', 'royalblue', 'tomato', 'royalblue']  # red=CCW, blue=CW — diagonal pairs
     prop_r       = L_arm * 0.12   # propeller disk radius
 
     _ang = np.linspace(0, 2 * np.pi, 40)

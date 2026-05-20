@@ -120,7 +120,7 @@ DISTURBANCES = [
 
 T_BUFFER = 4.0
 
-PLOT_MODE      = "root_locus"   # "sim" | "root_locus"
+PLOT_MODE      = "sim"   # "sim" | "root_locus"
 PLOT_REFERENCE = True
 PLOT_ACTUAL    = True
 ENABLE_PLOTS   = PLOT_MODE in ("sim", "root_locus")
@@ -130,8 +130,10 @@ ENABLE_PLOTS   = PLOT_MODE in ("sim", "root_locus")
 UW_HORIZ_XY_FR = (L_box / 2.0, -W_box / 2.0)   # (m, m)
 UW_HORIZ_ALPHA = 45.0   # [deg] from box wall surface toward interior
 
-# Ballast / buoyancy
-UW_BALLAST_RESIDUAL = 8.0    # [N] net upward buoyancy remaining after ballast set
+# Ballast compensation percentage
+#   100 = neutrally buoyant (ballast perfectly cancels gross net buoyancy, residual = 0 N)
+#   0   = no flooding / worst case (full gross net buoyancy remains as residual)
+BUOYANCY_COMP_PCT = 95   # [%]  tune this; UW_BALLAST_RESIDUAL computed below after uw init
 
 # Depth intervals for ballast steps (informational — props handle continuous control)
 UW_BALLAST_DEPTH_INTERVALS = [-10.0, -20.0, -30.0, -40.0, -50.0, -60.0]   # [m]
@@ -187,6 +189,9 @@ class UWParams:
 
 uw = UWParams()
 
+# Derive residual from compensation percentage (evaluated after uw so F_buoy_gross_net is known)
+UW_BALLAST_RESIDUAL = (1.0 - BUOYANCY_COMP_PCT / 100.0) * uw.F_buoy_gross_net
+
 print("=" * 58)
 print("  UNDERWATER VEHICLE PARAMETERS")
 print("=" * 58)
@@ -200,8 +205,9 @@ print(f"  {'tau_m_v':<8}  Vert prop motor lag     {uw.tau_m_v:.4f}   s")
 print(f"  {'kT_h':<8}  Horiz thruster coeff    {uw.kT_h:.2e}  N·s²/rad²")
 print(f"  {'F_buoy':<8}  Gross buoyancy          {uw.F_buoyancy:.2f}   N")
 print(f"  {'F_net':<8}  Gross net buoyancy      {uw.F_buoy_gross_net:.2f}   N")
+print(f"  {'Comp%':<8}  Ballast compensation    {BUOYANCY_COMP_PCT:.2f}   %")
 print(f"  {'Residual':<8}  Ballast residual        {UW_BALLAST_RESIDUAL:.2f}   N (upward)")
-print(f"  {'w_v_eq':<8}  Vert prop eq speed      {uw.omega_v_eq:.2f}   rad/s")
+print(f"  {'w_v_eq':<8}  Vert prop eq speed      {-uw.omega_v_eq:.2f}   rad/s  ({uw.omega_v_eq*60/(2*np.pi):.0f} RPM)  (negative = down)")
 print("=" * 58)
 
 
@@ -210,51 +216,55 @@ print("=" * 58)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _gains_uw = {
-    # att: inner attitude loop (keep vehicle level, track yaw)
-    # cyl: outer position loop (direct force, cylindrical coords)
-    # Starting estimates — tune via root_locus mode
+    # att: inner attitude loop
+    #   phi/theta: Ixx_uw=4.04, Iyy_uw=9.64 kg·m²  → wn=3 rad/s, ζ=0.9
+    #              Kp = I*wn²,  Kd = 2*ζ*wn*I
+    #   psi:       Izz_uw=11.91 kg·m²               → wn=2 rad/s, ζ=0.9
+    # cyl: outer position loop (drag cancelled — see force commands below)
+    #   After drag feedforward the plant is m*x''=Fx_cmd, so
+    #   Kd targets the PD pole directly: wn=sqrt(Kp), ζ=Kd/(2*wn)
     "hold": dict(
-        att_Kp    = np.array([28.5,  41.1,  19.5]),
+        att_Kp    = np.array([36.0,  87.0,  48.0]),
         att_Ki    = np.array([0.2,   0.2,   0.1 ]),
-        att_Kd    = np.array([34.2,  49.3,  43.9]),
+        att_Kd    = np.array([22.0,  52.0,  43.0]),
         att_i_lim = np.array([10.0,  10.0,  5.0 ]),
         att_lim   = 0.30,
-        cyl_Kp    = np.array([0.09, 0.09, 0.09]),
-        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([0.42, 0.42, 0.42]),
+        cyl_Kp    = np.array([0.30, 0.30, 0.20]),   # wn ≈ 0.55, 0.55, 0.45
+        cyl_Ki    = np.array([0.01, 0.01, 0.02]),
+        cyl_Kd    = np.array([1.00, 1.00, 0.80]),   # ζ ≈ 0.9
         cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
     "custom": dict(
-        att_Kp    = np.array([28.5,  41.1,  19.5]),
+        att_Kp    = np.array([36.0,  87.0,  48.0]),
         att_Ki    = np.array([0.2,   0.2,   0.1 ]),
-        att_Kd    = np.array([34.2,  49.3,  43.9]),
+        att_Kd    = np.array([22.0,  52.0,  43.0]),
         att_i_lim = np.array([10.0,  10.0,  5.0 ]),
         att_lim   = 0.30,
-        cyl_Kp    = np.array([0.09, 0.09, 0.09]),
+        cyl_Kp    = np.array([0.60, 0.60, 0.30]),   # wn ≈ 0.77, 0.77, 0.55
         cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([0.42, 0.42, 0.42]),
+        cyl_Kd    = np.array([1.40, 1.40, 0.90]),   # ζ ≈ 0.9
         cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
     "lawnmower": dict(
-        att_Kp    = np.array([28.5,  41.1,  19.5]),
+        att_Kp    = np.array([36.0,  87.0,  48.0]),
         att_Ki    = np.array([0.2,   0.2,   0.1 ]),
-        att_Kd    = np.array([34.2,  49.3,  43.9]),
+        att_Kd    = np.array([22.0,  52.0,  43.0]),
         att_i_lim = np.array([10.0,  10.0,  5.0 ]),
         att_lim   = 0.30,
-        cyl_Kp    = np.array([0.09, 0.09, 0.16]),
+        cyl_Kp    = np.array([1.00, 1.00, 0.50]),   # wn ≈ 1.0, 1.0, 0.71
         cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([0.42, 0.42, 0.56]),
+        cyl_Kd    = np.array([1.80, 1.80, 1.30]),   # ζ ≈ 0.9
         cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
     "spiral": dict(
-        att_Kp    = np.array([28.5,  41.1,  19.5]),
+        att_Kp    = np.array([36.0,  87.0,  48.0]),
         att_Ki    = np.array([0.2,   0.2,   0.1 ]),
-        att_Kd    = np.array([34.2,  49.3,  43.9]),
+        att_Kd    = np.array([22.0,  52.0,  43.0]),
         att_i_lim = np.array([10.0,  10.0,  5.0 ]),
         att_lim   = 0.30,
-        cyl_Kp    = np.array([0.09, 0.09, 0.09]),
+        cyl_Kp    = np.array([0.80, 0.80, 0.40]),   # wn ≈ 0.89, 0.89, 0.63
         cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([0.42, 0.42, 0.42]),
+        cyl_Kd    = np.array([1.60, 1.60, 1.10]),   # ζ ≈ 0.9
         cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
 }
@@ -291,23 +301,23 @@ _lv_x = _vert_pos[:, 0]   # x positions of each vertical prop
 _lv_y = _vert_pos[:, 1]   # y positions of each vertical prop
 
 # Spin directions: diagonal CCW/CW pairs matching aerial X-config
-# arm_angles_deg = [45, 135, 225, 315] → positions FL, RL, RR, FR
-# Diagonal pairs: (45°, 225°) = motors 0,2  and  (135°, 315°) = motors 1,3
-# CCW (positive kQ): motors 0 (45°) and 2 (225°)
-# CW  (negative kQ): motors 1 (135°) and 3 (315°)
+# arm_angles_deg = [45, 135, 225, 315] → motor 0=FL, 1=RL, 2=RR, 3=FR
+# Diagonal pair A: FL(0) + RR(2) at 45° and 225° → CCW (+1)
+# Diagonal pair B: RL(1) + FR(3) at 135° and 315° → CW  (-1)
 _spin_dir = np.array([+1.0, -1.0, +1.0, -1.0])   # diagonal pairs — alternating
 
 # A_mix_vert maps signed squared speeds [q1, q2, q3, q4] to [Fz_v, tau_phi, tau_theta, tau_psi_v]
-# Fz_v positive = downward thrust on vehicle (props push vehicle DOWN)
+# CONVENTION: positive wi → upward thrust (+z_body), same as aerial.
+# At equilibrium, props spin at negative speed to push DOWN and cancel residual buoyancy.
 #
-# For downward force F = -kT_v*qi in body-z at position r_i = (lv_x_i, lv_y_i, lv_z_i):
-#   tau_x (phi)   = r_iy * F_z = lv_y_i * (-kT_v*qi) = -kT_v * qi * lv_y_i
-#   tau_y (theta) = -r_ix * F_z = -lv_x_i * (-kT_v*qi) = +kT_v * qi * lv_x_i
-#   tau_z (psi)   = kQ_v * spin_dir_i * qi  (reaction torque from rotor)
+# For upward force F = +kT_v*qi in body-z at position r_i = (lv_x_i, lv_y_i, lv_z_i):
+#   tau_x (phi)   =  r_iy * F_z = +lv_y_i * kT_v * qi
+#   tau_y (theta) = -r_ix * F_z = -lv_x_i * kT_v * qi
+#   tau_z (psi)   = kQ_v * spin_dir_i * qi  (reaction torque)
 A_mix_vert = np.array([
-    [ uw.kT_v] * 4,                                    # Fz_v
-    [-uw.kT_v * _lv_y[i] for i in range(4)],           # tau_phi
-    [+uw.kT_v * _lv_x[i] for i in range(4)],           # tau_theta (+sign for downward thrust)
+    [ uw.kT_v] * 4,                                    # Fz_v (positive = upward)
+    [+uw.kT_v * _lv_y[i] for i in range(4)],           # tau_phi
+    [-uw.kT_v * _lv_x[i] for i in range(4)],           # tau_theta
     [ uw.kQ_v * _spin_dir[i] for i in range(4)],       # tau_psi_v
 ])
 
@@ -682,7 +692,7 @@ def uw_ode(s, wr_vert_cmd, Fh_cmd, Fd, taud):
     # Vertical prop forces: signed squared speed q_i = w_i * |w_i|
     q_v  = wr_v * np.abs(wr_v)
     u_v  = A_mix_vert @ q_v          # [Fz_v, tau_phi, tau_theta, tau_psi_v]
-    # Fz_v > 0 = downward thrust = -z_body; enters F_body as -u_v[0]
+    # Fz_v > 0 = upward (same as aerial T); negative at eq to cancel buoyancy
 
     # Horizontal thruster forces
     Fx_h      = A_mix_horiz[0, :] @ Fh_cmd
@@ -690,7 +700,7 @@ def uw_ode(s, wr_vert_cmd, Fh_cmd, Fd, taud):
     tau_psi_h = A_mix_horiz[2, :] @ Fh_cmd
 
     # Total body force (horizontal from H-thrusters, vertical from V-props)
-    F_body = np.array([Fx_h, Fy_h, -u_v[0]])
+    F_body = np.array([Fx_h, Fy_h, u_v[0]])
 
     # External: residual buoyancy upward after ballast
     F_buoy_net = np.array([0.0, 0.0, UW_BALLAST_RESIDUAL])
@@ -724,8 +734,8 @@ def rk4_step_uw(s, wr_vert_cmd, Fh_cmd, Fd, taud, dt_):
 # ══════════════════════════════════════════════════════════════════════════════
 
 X       = np.zeros((16, N))
-# Initialise vertical props at equilibrium speed (fighting residual buoyancy)
-X[12:16, 0] = uw.omega_v_eq
+# Equilibrium: negative speed (downward thrust) to cancel upward buoyancy residual
+X[12:16, 0] = -uw.omega_v_eq
 
 if x0_override is not None:
     X[0:3, 0] = x0_override
@@ -789,11 +799,14 @@ for k in _sim_iter:
         int_pos = np.clip(int_pos + e_pos * dt, -cyl_i_lim, cyl_i_lim)
         a_cmd = cyl_Kp * e_pos + cyl_Ki * int_pos + cyl_Kd * e_vel + ref_acc[:, k]
 
-    # ── Direct force allocation (no attitude conversion for x,y) ──────────
-    Fx_cmd = p.m * a_cmd[0]
-    Fy_cmd = p.m * a_cmd[1]
-    # Vertical: Fz_v_cmd = residual buoyancy offset - desired upward acceleration
-    Fz_v_cmd = UW_BALLAST_RESIDUAL - p.m * a_cmd[2]
+    # ── Direct force allocation with drag feedforward ─────────────────────
+    # Water drag in the ODE is F_drag = -kd_uw * vel (opposes motion).
+    # Adding kd_uw * vel to the force command cancels it, leaving the plant
+    # as m*x'' = m*a_cmd (ideal integrator chain).  This eliminates the
+    # steady-state lag kd*v_ref/(m*Kp) that would otherwise scale with speed.
+    Fx_cmd   = p.m * a_cmd[0] + uw.kd_uw[0] * vel[0]
+    Fy_cmd   = p.m * a_cmd[1] + uw.kd_uw[1] * vel[1]
+    Fz_v_cmd = p.m * a_cmd[2] - UW_BALLAST_RESIDUAL + uw.kd_uw[2] * vel[2]
 
     U_log_horiz[0, k] = Fx_cmd
     U_log_horiz[1, k] = Fy_cmd
@@ -822,8 +835,14 @@ for k in _sim_iter:
     wr_v_cmd = np.clip(wr_v_cmd, -uw.omega_max_v, uw.omega_max_v)
     Wr_log[:, k] = wr_v_cmd
 
-    # ── Horizontal thruster mixing: [Fx, Fy, tau_psi] → forces ───────────
-    u_horiz = np.array([Fx_cmd, Fy_cmd, tau_psi_cmd])
+    # ── Horizontal thruster mixing ────────────────────────────────────────
+    # a_cmd and the drag-compensation term are in INERTIAL frame.
+    # A_mix_horiz produces BODY-frame forces.  Must rotate inertial→body
+    # before thruster allocation, otherwise at psi=π (inspection heading)
+    # every x-y force is applied backwards and the drone flies away.
+    R_cur = rot_ZYX(phi, theta, psi)
+    _Fxy_body = R_cur.T @ np.array([Fx_cmd, Fy_cmd, 0.0])
+    u_horiz = np.array([_Fxy_body[0], _Fxy_body[1], tau_psi_cmd])
     U_log_horiz[2, k] = tau_psi_cmd
     Fh_cmd_k = A_mix_horiz_pinv @ u_horiz
     Fh_cmd_k = np.clip(Fh_cmd_k, -uw.F_h_max, uw.F_h_max)
@@ -841,11 +860,15 @@ U_log_horiz[:, -1] = U_log_horiz[:, -2]
 # LINEARISATION around UW equilibrium
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Equilibrium: at chosen depth, props at wr_v_eq, no horizontal thrust
-_wr_v_eq = uw.omega_v_eq
+# Equilibrium: props at negative speed (downward thrust cancels buoyancy residual)
+# ψ = π: drone faces inward toward tower, matching the inspection ref_yaw.
+# This is the correct operating point for the root locus — without it the
+# x-y rotation effect (R.T at ψ=π negates x,y forces) is not captured.
+_wr_v_eq = -uw.omega_v_eq            # signed equilibrium speed (negative = downward)
 _s0_uw   = np.zeros(16)
 _s0_uw[2]     = UW_LINEARISE_DEPTH   # depth
-_s0_uw[12:16] = _wr_v_eq             # vertical props at equilibrium
+_s0_uw[5]     = np.pi                # psi = π (facing inward, inspection heading)
+_s0_uw[12:16] = _wr_v_eq             # vertical props at equilibrium (negative)
 
 # Input: [w_vert_cmd(4), Fh_cmd(4)] = 8 inputs
 _u0_uw = np.concatenate([np.full(4, _wr_v_eq), np.zeros(4)])
@@ -879,42 +902,51 @@ print(f"Open-loop poles:\n{np.sort_complex(np.linalg.eigvals(A_lin_uw))}")
 
 # ── Closed-loop gain matrix for UW root locus ─────────────────────────────────
 
-def build_K_cl_uw(pKp, pKi, pKd, aKp, aKi, aKd):
+def build_K_cl_uw(pKp, pKi, pKd, aKp, aKi, aKd, psi_lin=np.pi):
     """
     Returns K_uw (8 x 16): linearised gain from state → [wr_vert_cmd(4), Fh_cmd(4)].
     A_cl_uw = A_lin_uw + B_lin_uw @ K_uw
 
-    UW control law (linearised at hover, psi=0):
-      Vert motors: [Fz_v, tau_phi, tau_theta, 0] via inv(A_mix_vert)
-      Horiz thrusters: [Fx, Fy, tau_psi] via pinv(A_mix_horiz)
+    psi_lin: linearisation heading [rad].  Use np.pi for the inspection case
+    (drone faces inward).  The simulation rotates inertial force commands to
+    body frame via R.T(psi); this function applies the same rotation so the
+    root locus is consistent with what the nonlinear sim actually does.
     """
     m   = p.m
-    wrv = max(_wr_v_eq, 1e-3)
+    wrv = max(abs(_wr_v_eq), 1e-3)   # magnitude of eq speed for linearisation
+    cp, sp = np.cos(psi_lin), np.sin(psi_lin)   # body←inertial rotation at psi_lin
 
     # Virtual input gains for vertical system (4 x 16)
+    # Fz_v_cmd = m*a_cmd[2] - RESIDUAL + kd_z*vz   (drag feedforward included)
+    # d(Fz_v)/dz  = -m*Kp[2]
+    # d(Fz_v)/dvz = -m*Kd[2] + kd_z   ← drag term shifts the vz gain
     Kv_vert = np.zeros((4, 16))
-    # Fz_v_cmd = UW_BALLAST_RESIDUAL - m*a_cmd[2], a_cmd[2] = Kp*(z_ref-z) + Kd*(vz_ref-vz)
-    # Linearising: d(Fz_v)/dz = -m*Kp*(d(z_ref-z)/dz) = -m*Kp*(-1) = +m*Kp
-    Kv_vert[0, 2]  = +(m * pKp[2])   # Fz_v ← z  (positive: vehicle too shallow → more down force)
-    Kv_vert[0, 8]  = +(m * pKd[2])   # Fz_v ← vz
-    Kv_vert[1, 3]  = -aKp[0]         # tau_phi ← phi
-    Kv_vert[1, 9]  = -aKd[0]         # tau_phi ← p
-    Kv_vert[2, 4]  = -aKp[1]         # tau_theta ← theta
-    Kv_vert[2, 10] = -aKd[1]         # tau_theta ← q
-    # Row 3 (tau_psi_v) = 0: yaw from horiz thrusters only
+    Kv_vert[0, 2]  = -(m * pKp[2])                    # Fz_v ← z
+    Kv_vert[0, 8]  = -(m * pKd[2]) + uw.kd_uw[2]      # Fz_v ← vz  (+kd cancels drag)
+    Kv_vert[1, 3]  = -aKp[0]                           # tau_phi ← phi
+    Kv_vert[1, 9]  = -aKd[0]                           # tau_phi ← p
+    Kv_vert[2, 4]  = -aKp[1]                           # tau_theta ← theta
+    Kv_vert[2, 10] = -aKd[1]                           # tau_theta ← q
 
-    # Convert [Fz_v, tau_phi, tau_theta, 0] to q_cmd via inv(A_mix_vert)
-    # Linearise q = w*|w| around wrv: dq = 2*wrv * dw -> dw = dq/(2*wrv)
     K_vert = (1.0 / (2.0 * wrv)) * A_mix_vert_inv @ Kv_vert   # (4 x 16)
 
     # Virtual input gains for horizontal system (3 x 16)
-    Kv_horiz = np.zeros((3, 16))
-    Kv_horiz[0, 0]  = -(m * pKp[0])  # Fx ← x
-    Kv_horiz[0, 6]  = -(m * pKd[0])  # Fx ← vx
-    Kv_horiz[1, 1]  = -(m * pKp[1])  # Fy ← y
-    Kv_horiz[1, 7]  = -(m * pKd[1])  # Fy ← vy
-    Kv_horiz[2, 5]  = -aKp[2]        # tau_psi ← psi
-    Kv_horiz[2, 11] = -aKd[2]        # tau_psi ← r
+    # Compute inertial-frame gains first, then rotate to body frame.
+    # d(Fx_inertial)/dx = -m*Kp[0],  d(Fx_inertial)/dvx = -m*Kd[0]+kd_x
+    # Body←inertial rotation (R.T at psi_lin) is applied to rows 0 and 1.
+    # At psi_lin=π: rows 0,1 simply negate — body x points in -inertial x.
+    Kv_iner = np.zeros((3, 16))
+    Kv_iner[0, 0]  = -(m * pKp[0])                    # Fx_iner ← x
+    Kv_iner[0, 6]  = -(m * pKd[0]) + uw.kd_uw[0]     # Fx_iner ← vx
+    Kv_iner[1, 1]  = -(m * pKp[1])                    # Fy_iner ← y
+    Kv_iner[1, 7]  = -(m * pKd[1]) + uw.kd_uw[1]     # Fy_iner ← vy
+    Kv_iner[2, 5]  = -aKp[2]                           # tau_psi ← psi (no rotation)
+    Kv_iner[2, 11] = -aKd[2]                           # tau_psi ← r
+
+    # Rotate rows 0,1 from inertial to body (R.T_z = [[cp,sp],[-sp,cp]])
+    Kv_horiz = Kv_iner.copy()
+    Kv_horiz[0, :] =  cp * Kv_iner[0, :] + sp * Kv_iner[1, :]
+    Kv_horiz[1, :] = -sp * Kv_iner[0, :] + cp * Kv_iner[1, :]
 
     K_horiz = A_mix_horiz_pinv @ Kv_horiz   # (4 x 16)
 
@@ -956,6 +988,85 @@ if PLOT_MODE == "sim":
         for i, ax in enumerate(['x','y','z']):
             print(f"  pos {ax}  : mean={np.abs(_ep[i]).mean():.3f} m   max={np.abs(_ep[i]).max():.3f} m")
 
+    # ── Actuator ceiling requirements ─────────────────────────────────────────
+    def _rpm(w): return abs(w) * 60.0 / (2.0 * np.pi)
+
+    _wv  = X[12:16, :]                          # actual signed prop speeds (4, N)
+    _wvc = Wr_log                                # commanded (4, N)
+
+    _wv_max  = float(np.max(_wv))               # most positive (upward-thrust direction)
+    _wv_min  = float(np.min(_wv))               # most negative (downward-thrust direction)
+    _wv_peak = float(np.max(np.abs(_wv)))       # largest absolute speed
+    _wv_eq   = -uw.omega_v_eq                   # signed design equilibrium
+
+    # Angular acceleration from first-order motor model: dw/dt = (w_cmd - w) / tau_m_v
+    _alpha_v = np.abs(_wvc[:, :-1] - _wv[:, :-1]) / uw.tau_m_v
+    _alpha_v_max = float(np.max(_alpha_v))
+    # Worst-case time to sweep the full bidirectional range at peak acceleration
+    _t_sweep_v = (2.0 * _wv_peak) / _alpha_v_max if _alpha_v_max > 0 else float('inf')
+
+    # Thrust: T_i = kT_v * q_i where q_i = w_i * |w_i| (signed)
+    _qv      = _wv * np.abs(_wv)
+    _T_up    = float(np.max(_qv)) * uw.kT_v     # max upward thrust per prop
+    _T_dn    = abs(float(np.min(_qv))) * uw.kT_v # max downward thrust per prop
+
+    # Reaction torque and power per prop
+    _Q_v_max = uw.kQ_v * _wv_peak**2
+    _P_v_max = uw.kQ_v * _wv_peak**3            # P ≈ torque × speed
+
+    # Horizontal thrusters (instantaneous model, no angular acceleration)
+    _fh      = Fh_log                            # (4, N)  N per thruster
+    _fh_max  = float(np.max(_fh))
+    _fh_min  = float(np.min(_fh))
+    _fh_peak = float(np.max(np.abs(_fh)))
+    _fh_util = 100.0 * _fh_peak / uw.F_h_max
+    # Reconstruct net Fx, Fy, Mz from thruster forces to get peak resultants
+    _Fx_hist = A_mix_horiz[0, :] @ _fh           # (N,)
+    _Fy_hist = A_mix_horiz[1, :] @ _fh
+    _Mz_hist = A_mix_horiz[2, :] @ _fh
+    _Fxy_peak = float(np.max(np.sqrt(_Fx_hist**2 + _Fy_hist**2)))
+    _Mz_peak  = float(np.max(np.abs(_Mz_hist)))
+    # Force rate of change (fd/dt via finite difference)
+    _fh_dot_max = float(np.max(np.abs(np.diff(_fh, axis=1)))) / dt
+
+    W = 64
+    print(f"\n{'═'*W}")
+    print("  VERTICAL PROP CEILING REQUIREMENTS  (motor / ESC sizing)")
+    print(f"{'═'*W}")
+    print(f"  {'Design equilibrium':<34}  {_wv_eq:>+9.1f} rad/s  ({_rpm(_wv_eq):>6.0f} RPM)")
+    print(f"  {'Saturation limit (bidirectional)':<34}  {'+/-':>4} {uw.omega_max_v:>5.1f} rad/s  ({_rpm(uw.omega_max_v):>6.0f} RPM)")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Max speed reached (upward dir)':<34}  {_wv_max:>+9.1f} rad/s  ({_rpm(_wv_max):>6.0f} RPM)")
+    print(f"  {'Min speed reached (downward dir)':<34}  {_wv_min:>+9.1f} rad/s  ({_rpm(_wv_min):>6.0f} RPM)")
+    print(f"  {'Peak absolute speed':<34}  {_wv_peak:>9.1f} rad/s  ({_rpm(_wv_peak):>6.0f} RPM)")
+    print(f"  {'Saturation margin remaining':<34}  {uw.omega_max_v - _wv_peak:>9.1f} rad/s  ({_rpm(uw.omega_max_v - _wv_peak):>6.0f} RPM)")
+    print(f"  {'Saturation utilisation':<34}  {100*_wv_peak/uw.omega_max_v:>9.1f} %")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Max angular acceleration':<34}  {_alpha_v_max:>9.0f} rad/s²")
+    print(f"  {'Min time to sweep full range':<34}  {_t_sweep_v:>9.3f} s  (2*peak / max_alpha)")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Max upward thrust   (per prop)':<34}  {_T_up:>9.2f} N")
+    print(f"  {'Max downward thrust (per prop)':<34}  {_T_dn:>9.2f} N")
+    print(f"  {'Max upward thrust   (4 props)':<34}  {4*_T_up:>9.2f} N")
+    print(f"  {'Max downward thrust (4 props)':<34}  {4*_T_dn:>9.2f} N")
+    print(f"  {'Equilibrium downward thrust':<34}  {UW_BALLAST_RESIDUAL:>9.2f} N  (= ballast residual)")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Max reaction torque (per prop)':<34}  {_Q_v_max:>9.4f} N·m")
+    print(f"  {'Max power estimate  (per prop)':<34}  {_P_v_max:>9.2f} W   (kQ × w³)")
+    print(f"\n  HORIZONTAL THRUSTER CEILING REQUIREMENTS")
+    print(f"  {'─'*(W-2)}")
+    print(f"  {'Saturation limit (per thruster)':<34}  {'+/-':>4} {uw.F_h_max:>5.1f} N")
+    print(f"  {'Max force reached (per thruster)':<34}  {_fh_max:>9.2f} N")
+    print(f"  {'Min force reached (per thruster)':<34}  {_fh_min:>9.2f} N")
+    print(f"  {'Peak absolute (per thruster)':<34}  {_fh_peak:>9.2f} N")
+    print(f"  {'Saturation utilisation':<34}  {_fh_util:>9.1f} %")
+    print(f"  {'Peak resultant Fx (net, body)':<34}  {float(np.max(np.abs(_Fx_hist))):>9.2f} N")
+    print(f"  {'Peak resultant Fy (net, body)':<34}  {float(np.max(np.abs(_Fy_hist))):>9.2f} N")
+    print(f"  {'Peak combined Fxy (net, body)':<34}  {_Fxy_peak:>9.2f} N")
+    print(f"  {'Peak yaw moment Mz (net, body)':<34}  {_Mz_peak:>9.2f} N·m")
+    print(f"  {'Max force rate of change':<34}  {_fh_dot_max:>9.1f} N/s  (per thruster)")
+    print(f"{'═'*W}")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLOTS
@@ -974,15 +1085,15 @@ elif PLOT_MODE == "root_locus":
     _z3  = np.zeros(3)
 
     def _inner_poles_uw():
-        K = build_K_cl_uw(_z3, _z3, _z3, _aKp, _z3, _aKd)
+        K = build_K_cl_uw(_z3, _z3, _z3, _aKp, _z3, _aKd, psi_lin=np.pi)
         return np.linalg.eigvals(A_lin_uw + B_lin_uw @ K)
 
     def _A_inner_cl_uw():
-        K = build_K_cl_uw(_z3, _z3, _z3, _aKp, _z3, _aKd)
+        K = build_K_cl_uw(_z3, _z3, _z3, _aKp, _z3, _aKd, psi_lin=np.pi)
         return A_lin_uw + B_lin_uw @ K
 
     def _full_poles_uw():
-        K = build_K_cl_uw(_pKp, _z3, _pKd, _aKp, _z3, _aKd)
+        K = build_K_cl_uw(_pKp, _z3, _pKd, _aKp, _z3, _aKd, psi_lin=np.pi)
         return np.linalg.eigvals(A_lin_uw + B_lin_uw @ K)
 
     fig_rl = plt.figure(figsize=(20, 13))
@@ -1030,9 +1141,8 @@ elif PLOT_MODE == "root_locus":
                             color='royalblue', label='Full closed-loop', zorder=5)
     ax_out.legend(loc='upper right', fontsize=8)
 
-    # Fix axis limits to initial pole locations
-    for ax, poles_list in [(ax_in, [ol_poles_uw, ip0]),
-                           (ax_out, [icp0, fp0])]:
+    # Inner loop: auto-scale to show all poles (including fast motor poles)
+    for ax, poles_list in [(ax_in, [ol_poles_uw, ip0])]:
         all_r = np.concatenate([p_.real for p_ in poles_list])
         all_i = np.concatenate([p_.imag for p_ in poles_list])
         pad_r = max(abs(all_r).max() * 0.15, 1.0)
@@ -1040,6 +1150,22 @@ elif PLOT_MODE == "root_locus":
         ax.set_xlim(all_r.min() - pad_r, max(all_r.max() + pad_r, 0.5))
         ax.set_ylim(-max(abs(all_i).max() + pad_i, 0.5),
                      max(abs(all_i).max() + pad_i, 0.5))
+
+    # Outer loop: zoom in on SLOW poles only.  Motor poles (Re ≈ -17) and fast
+    # attitude poles are off-screen intentionally — they barely move when outer
+    # loop gains change.  The interesting region is near the origin where the
+    # position poles migrate as cyl_Kp / cyl_Kd are adjusted.
+    _slow = lambda poles: poles[poles.real > -10.0]
+    _sp0  = np.concatenate([_slow(icp0), _slow(fp0)])
+    _sr   = _sp0.real if len(_sp0) > 0 else np.array([-3.0, 0.0])
+    _si   = _sp0.imag if len(_sp0) > 0 else np.array([-2.0, 2.0])
+    _pad_r = max(abs(_sr).max() * 0.20, 1.0)
+    _pad_i = max(abs(_si).max() * 0.20, 1.5)
+    ax_out.set_xlim(_sr.min() - _pad_r, 0.5)
+    ax_out.set_ylim(-max(abs(_si).max() + _pad_i, 1.5),
+                     max(abs(_si).max() + _pad_i, 1.5))
+    ax_out.text(0.02, 0.02, "Motor & fast att. poles (Re < −10) off-screen",
+                transform=ax_out.transAxes, fontsize=7, color='gray')
 
     def _refresh_inner():
         ip = _inner_poles_uw()
@@ -1051,7 +1177,7 @@ elif PLOT_MODE == "root_locus":
         fp  = _full_poles_uw()
         sc_ref.set_offsets(np.c_[icp.real, icp.imag])
         sc_out.set_offsets(np.c_[fp.real, fp.imag])
-        fig_rl.canvas.draw_idle()
+        fig_rl.canvas.draw_idle()   # scatter set_offsets does not change axis limits
 
     # ── Sliders ───────────────────────────────────────────────────────────
     SL_H = 0.060; SL_W = 0.095; SL_GAP = 0.008
@@ -1208,8 +1334,8 @@ else:  # PLOT_MODE == "sim"
         ax = axes3[i, 0]
         ax.plot(t_p, Uv_p[i, :], 'teal', lw=1.6)
         if i == 0:
-            ax.axhline(UW_BALLAST_RESIDUAL, color='r', ls='--', lw=1.0,
-                       label=f'Ballast residual ({UW_BALLAST_RESIDUAL} N)')
+            ax.axhline(-UW_BALLAST_RESIDUAL, color='r', ls='--', lw=1.0,
+                       label=f'Eq Fz_v (−{UW_BALLAST_RESIDUAL:.1f} N)')
             ax.legend(loc='lower right')
         ax.axhline(0, color='k', ls=':', lw=0.8)
         ax.set_ylabel(vert_labels[i]); ax.grid(True)
@@ -1235,8 +1361,8 @@ else:  # PLOT_MODE == "sim"
     for i in range(4):
         ax = axes4[i]
         ax.plot(t_p, X_p[12+i, :], 'b', lw=1.6)
-        ax.axhline( uw.omega_v_eq,  color='r', ls='--', lw=1.0, label='w_eq')
-        ax.axhline(-uw.omega_v_eq,  color='r', ls='--', lw=1.0)
+        ax.axhline(-uw.omega_v_eq,  color='r', ls='--', lw=1.0, label='w_eq (downward)')
+        ax.axhline( uw.omega_v_eq,  color='r', ls='--', lw=1.0)
         ax.axhline( uw.omega_max_v, color='k', ls='--', lw=1.0, label='max')
         ax.axhline(-uw.omega_max_v, color='k', ls='--', lw=1.0)
         ax.axhline(0, color='k', ls=':', lw=0.8)
