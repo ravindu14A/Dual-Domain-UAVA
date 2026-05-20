@@ -276,7 +276,7 @@ def _lawnmower_turn_waypoints(a_max=2.0, r_corner=0.0):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Trajectory source ────────────────────────────────────────────────────────
-TRAJ_MODE = "test_time_air"
+TRAJ_MODE = "hold"
 #   "hold"         : hold at origin for the whole simulation
 #   "custom"       : waypoints from TRAJ_SEGMENTS below
 #   "test_time_air": full aerial path + velocity profile from Test_time.py
@@ -319,7 +319,7 @@ DISTURBANCES = [
 T_BUFFER = 4.0    # [s] extra run-time appended after the last event
 
 # ── Output ───────────────────────────────────────────────────────────────────
-PLOT_MODE       = "sim"        # "sim"        → full simulation plots (figs 1–6)
+PLOT_MODE       = "root_locus"        # "sim"        → full simulation plots (figs 1–6)
                                # "root_locus" → closed-loop pole map only
 PLOT_REFERENCE  = True         # show reference trajectory lines  (sim mode only)
 PLOT_ACTUAL     = True         # show actual (controller) trajectory lines (sim mode only)
@@ -390,51 +390,50 @@ _gains = {
     #   r  = standoff distance  [m]        — radial
     #   t  = arc-length tangential [m]     — r·e_θ keeps units consistent with r
     #   z  = height             [m]
-    # ── Physics-based gains: wn=2.3 rad/s (phi/theta), 1.1 rad/s (psi), zeta=0.85/0.90 ──
-    # Outer: wn=0.5 rad/s (r/t), 1.0 rad/s (z), zeta=0.8  — separation 4.6x ──
+    # ── Root-locus tuned gains (from image) ──
     "hold": dict(
-        att_Kp    = np.array([67.0, 97.0, 37.0]),
-        att_Ki    = np.array([0.3,  0.3,  0.1 ]),
-        att_Kd    = np.array([50.0, 71.0, 60.0]),
-        att_i_lim = np.array([10.0, 10.0, 5.0 ]),
+        att_Kp    = np.array([66.9,  132.1, 36.96]),
+        att_Ki    = np.array([0.3,   0.3,   0.1  ]),
+        att_Kd    = np.array([38.55, 71.1,  49.32]),
+        att_i_lim = np.array([10.0,  10.0,  5.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.25, 0.25, 1.00]),
-        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([0.80, 0.80, 1.60]),
-        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
+        cyl_Kp    = np.array([0.244, 0.300, 0.656]),
+        cyl_Ki    = np.array([0.02,  0.02,  0.05 ]),
+        cyl_Kd    = np.array([0.784, 0.904, 1.598]),
+        cyl_i_lim = np.array([5.0,   5.0,   10.0 ]),
     ),
     "custom": dict(
-        att_Kp    = np.array([67.0, 97.0, 37.0]),
-        att_Ki    = np.array([0.3,  0.3,  0.1 ]),
-        att_Kd    = np.array([50.0, 71.0, 60.0]),
-        att_i_lim = np.array([10.0, 10.0, 5.0 ]),
+        att_Kp    = np.array([66.9,  132.1, 36.96]),
+        att_Ki    = np.array([0.3,   0.3,   0.1  ]),
+        att_Kd    = np.array([38.55, 71.1,  49.32]),
+        att_i_lim = np.array([10.0,  10.0,  5.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.25, 0.25, 1.00]),
-        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([0.80, 0.80, 1.60]),
-        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
+        cyl_Kp    = np.array([0.244, 0.300, 0.656]),
+        cyl_Ki    = np.array([0.02,  0.02,  0.05 ]),
+        cyl_Kd    = np.array([0.784, 0.904, 1.598]),
+        cyl_i_lim = np.array([5.0,   5.0,   10.0 ]),
     ),
     "spiral": dict(
-        att_Kp    = np.array([67.0, 97.0, 37.0]),
-        att_Ki    = np.array([0.3,  0.3,  0.1 ]),
-        att_Kd    = np.array([50.0, 71.0, 60.0]),
-        att_i_lim = np.array([10.0, 10.0, 5.0 ]),
+        att_Kp    = np.array([66.9,  132.1, 36.96]),
+        att_Ki    = np.array([0.3,   0.3,   0.1  ]),
+        att_Kd    = np.array([38.55, 71.1,  49.32]),
+        att_i_lim = np.array([10.0,  10.0,  5.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.25, 0.25, 1.00]),
-        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([0.80, 0.80, 1.60]),
-        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
+        cyl_Kp    = np.array([0.244, 0.300, 0.656]),
+        cyl_Ki    = np.array([0.02,  0.02,  0.05 ]),
+        cyl_Kd    = np.array([0.784, 0.904, 1.598]),
+        cyl_i_lim = np.array([5.0,   5.0,   10.0 ]),
     ),
     "lawnmower": dict(
-        att_Kp    = np.array([67.0, 97.0, 37.0]),
-        att_Ki    = np.array([0.3,  0.3,  0.1 ]),
-        att_Kd    = np.array([50.0, 71.0, 60.0]),
-        att_i_lim = np.array([10.0, 10.0, 5.0 ]),
+        att_Kp    = np.array([66.9,  132.1, 36.96]),
+        att_Ki    = np.array([0.3,   0.3,   0.1  ]),
+        att_Kd    = np.array([38.55, 71.1,  49.32]),
+        att_i_lim = np.array([10.0,  10.0,  5.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.25, 0.25, 1.00]),
-        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([0.80, 0.80, 1.60]),
-        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
+        cyl_Kp    = np.array([0.244, 0.300, 0.656]),
+        cyl_Ki    = np.array([0.02,  0.02,  0.05 ]),
+        cyl_Kd    = np.array([0.784, 0.904, 1.598]),
+        cyl_i_lim = np.array([5.0,   5.0,   10.0 ]),
     ),
 }
 
