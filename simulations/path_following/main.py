@@ -639,8 +639,8 @@ def animate(result: dict, path: InspectionPath,
             b.label.set_fontsize(9)
             return b
 
-        rewind_btn = _btn([0.67, 0.025, 0.10, 0.045], "⏮  Start")
-        play_btn   = _btn([0.79, 0.025, 0.10, 0.045], "⏸  Pause")
+        rewind_btn = _btn([0.67, 0.025, 0.10, 0.045], "|<  Start")
+        play_btn   = _btn([0.79, 0.025, 0.10, 0.045], "||  Pause")
 
         # Shared mutable state ────────────────────────────────────────────────
         state = {"i": 0, "playing": True, "slider_driven": False}
@@ -781,7 +781,9 @@ def main():
     print(f"  Mean error: {result['error'].mean():.3f} m  "
           f"Peak: {result['error'].max():.3f} m")
     print(f"  Battery remaining: "
-          f"{result['battery'][-1]/result['bat_cap']*100:.1f} %")
+          f"{result['battery'][-1]/result['bat_cap']*100:.1f} %."
+          f"  Total energy used: {(result['bat_cap'] - result['battery'][-1]):.2f} Wh"
+          f"  Total battery left: {result['battery'][-1]:.2f} Wh")
 
     # ── Kinematics export ─────────────────────────────────────────────────────
     print(f"\n  Exporting kinematics …")
