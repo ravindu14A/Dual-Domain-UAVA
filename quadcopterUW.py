@@ -35,16 +35,13 @@ Dependencies: numpy matplotlib control tqdm
 
 import numpy as np
 import matplotlib.pyplot as plt
-import control
 try:
     from tqdm import tqdm
 except ImportError:
     tqdm = None
 
-# ── Imports from shared modules ───────────────────────────────────────────────
 from geometry import (
-    L_box, W_box, H_box, m_box,
-    L_arm, m_arm, m_motor,
+    L_box, W_box, H_box,
     arm_angles_deg, CoM,
     total_mass as _geo_mass,
     Ixx_uw as _geo_Ixx_uw,
@@ -58,11 +55,9 @@ from Test_time import (
 )
 from Test_time_functions import (
     get_w_arc, get_v_frame,
-    get_velocity_rgb_lawnmower, get_velocity_event,
+    get_velocity_rgb_lawnmower,
     get_velocity_hyper_lawnmower,
 )
-
-# ── Trajectory helper functions (mirrored from quadcopterSC.py) ───────────────
 
 def arc_lengths(pts):
     s = np.zeros(len(pts))
@@ -97,82 +92,131 @@ def make_times(pts, speeds, t_start):
     return np.array(times)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SIMULATION CONFIGURATION  —  edit only in this section
-# ══════════════════════════════════════════════════════════════════════════════
+# --- Simulation config (edit only here) ---
 
 TRAJ_MODE = "test_time_water"
-#   "hold"             : hold at origin underwater
-#   "custom"           : user-defined segments (Cartesian, same format as quadcopterSC)
-#   "test_time_water"  : full underwater lawnmower from water_config
+#   "hold"             - hold at origin
+#   "custom"           - user-defined Cartesian segments
+#   "test_time_water"  - full underwater lawnmower from water_config
 
 TRAJ_SEGMENTS = [
     (0.0,  0.0, 0.0, 0.0),
     (5.0,  6.0, 0.0, 0.0),
 ]   # used only when TRAJ_MODE = "custom"
 
-TRAJ_ACCEL_MAX = 2.0    # [m/s²] trapezoidal ramp acceleration underwater (slower than aerial)
+TRAJ_ACCEL_MAX = 2.0    # [m/s²] ramp accel underwater (slower than aerial)
+
+# feedforward toggles
+USE_DRAG_FF = False    # quadratic drag feedforward in force allocation
+USE_MASS_FF = False    # added mass compensation in force allocation (m_eff = m + m_added)
+USE_CENT_FF = False    # centripetal/Coriolis ref_acc feedforward added to a_cmd
+
+# event-triggered waypoint advancement
+# False: reference advances in lockstep with simulation time (standard)
+# True:  reference pointer only advances when |z_actual - z_ref| < EVENT_Z_TOL
+#        horizontal/yaw references are held until Z has caught up
+USE_EVENT_TRIG = True
+EVENT_Z_TOL    = 0.5   # [m] Z tracking tolerance to release next reference slice
 
 DIST_ENABLED = False
 DISTURBANCES = [
     (20.0, 22.0,  3.0, 0.0, 0.0,  0.0, 0.0, 0.0),
 ]
 
-T_BUFFER = 4.0
+# impulse disturbances
+# rows: (t_impulse, Jx, Jy, Jz [N·s], Jtx, Jty, Jtz [N·m·s])
+# applied as Fd = J/dt for the single step containing t_impulse
+IMPULSE_ENABLED = False
+IMPULSES = [
+    #  t [s]   Jx    Jy    Jz    Jtx   Jty   Jtz
+    (  20.0,  10.0,  0.0,  0.0,  0.0,  0.0,  0.0),
+]
+
+# ocean current profile - inertial frame [m/s]
+# enters drag as F_drag = -kd_uw * (vel_drone - v_current)
+# CURRENT_INTERP: 'linear' or 'cubic' (cubic needs >= 4 rows)
+CURRENT_ENABLED = False
+CURRENT_INTERP  = 'linear'
+CURRENT_PROFILE = np.array([
+    #  t [s]   vx [m/s]   vy [m/s]   vz [m/s]
+    [   0.0,     0.0,       0.0,       0.0],
+    [   1.0,     0.0,       0.0,       0.0],
+])
+
+T_BUFFER = 150
 
 PLOT_MODE      = "sim"   # "sim" | "root_locus"
 PLOT_REFERENCE = True
 PLOT_ACTUAL    = True
 ENABLE_PLOTS   = PLOT_MODE in ("sim", "root_locus")
 
-# ── Underwater geometry parameters ───────────────────────────────────────────
-# Horizontal thruster position (FR corner x,y in body frame; others mirrored)
-UW_HORIZ_XY_FR = (L_box / 2.0, -W_box / 2.0)   # (m, m)
-UW_HORIZ_ALPHA = 45.0   # [deg] from box wall surface toward interior
+# underwater geometry
+UW_HORIZ_XY_FR = (L_box / 2.0, -W_box / 2.0)   # FR corner (m, m); others mirrored
+UW_HORIZ_ALPHA = 45.0   # [deg] thruster angle from wall toward interior
 
-# Ballast compensation percentage
-#   100 = neutrally buoyant (ballast perfectly cancels gross net buoyancy, residual = 0 N)
-#   0   = no flooding / worst case (full gross net buoyancy remains as residual)
-BUOYANCY_COMP_PCT = 95   # [%]  tune this; UW_BALLAST_RESIDUAL computed below after uw init
+# 100% = neutrally buoyant, 0% = no ballast flooding (full buoyancy remains)
+BUOYANCY_COMP_PCT = 95   # [%] UW_BALLAST_RESIDUAL computed below
 
-# Depth intervals for ballast steps (informational — props handle continuous control)
-UW_BALLAST_DEPTH_INTERVALS = [-10.0, -20.0, -30.0, -40.0, -50.0, -60.0]   # [m]
+UW_BALLAST_DEPTH_INTERVALS = [-10.0, -20.0, -30.0, -40.0, -50.0, -60.0]   # [m] informational
 
-# Root locus linearisation depth
-UW_LINEARISE_DEPTH = -20.0   # [m]
+UW_LINEARISE_DEPTH = -20.0              # [m]   depth
+UW_LINEARISE_PSI   = np.pi             # [rad] yaw  (π = facing tower)
+UW_LINEARISE_VEL   = np.array([0.0, 0.0, 0.0])   # [m/s] velocity (affects drag linearisation)
 
+M_ADDED_FRAC_SIM   = np.array([0.10, 0.40, 0.25]) # plant added mass (fraction of rho*V per axis)
+M_ADDED_FRAC_CTRL  = np.array([0.10, 0.40, 0.25]) # controller assumed added mass fractions
 
-# ══════════════════════════════════════════════════════════════════════════════
-# VEHICLE PARAMETERS
-# ══════════════════════════════════════════════════════════════════════════════
+# --- Vehicle parameters ---
 
 class Params:
-    """Rigid-body parameters for underwater configuration (folded arms)."""
+    """Rigid-body params for underwater config (folded arms)."""
     m   = _geo_mass    # total mass unchanged
-    Ixx = _geo_Ixx_uw  # roll inertia — recalculated for folded arms
-    Iyy = _geo_Iyy_uw  # pitch inertia — recalculated for folded arms
-    Izz = _geo_Izz_uw  # yaw inertia — recalculated for folded arms
+    Ixx = _geo_Ixx_uw  # roll inertia, folded arms
+    Iyy = _geo_Iyy_uw  # pitch inertia, folded arms
+    Izz = _geo_Izz_uw  # yaw inertia, folded arms
     Ixz = 0.0
     g   = 9.81
 
 p = Params()
 
 class UWParams:
-    """Underwater-specific thruster and hydrodynamic parameters."""
-    # Vertical props — same coefficients as aerial motors
-    kT_v    = 5.0e-4    # [N·s²/rad²] thrust coeff
-    kQ_v    = 1.0e-5    # [N·m·s²/rad²] torque coeff
+    """Underwater thruster and hydrodynamic parameters."""
+    # ── Vertical prop hydrodynamics (physical parameterisation) ─────────
+    # kT = CT * rho * D^4 / (4π²),  kQ = CQ * rho * D^5 / (4π²)
+    # rho = 1025 kg/m³ (seawater) — props operating fully submerged
+    # CT_v, CQ_v are much lower than aerial because water is ~836x denser:
+    #   same kT/kQ absolute values → CT_v ≈ CT_air / 836, CQ_v ≈ CQ_air / 836
+    CT_v    = 4.70e-5    # vertical prop thrust coeff in seawater (dimensionless)
+    CQ_v    = 1.18e-6    # vertical prop torque coeff in seawater (dimensionless)
+    D_v     = 0.80       # vertical prop diameter [m]
+    kT_v    = CT_v * 1025.0 * D_v**4 / (4 * np.pi**2)   # ≈ 5.0e-4 N·s²/rad²
+    kQ_v    = CQ_v * 1025.0 * D_v**5 / (4 * np.pi**2)   # ≈ 1.0e-5 N·m·s²/rad²
     tau_m_v = 0.06      # [s] motor lag
-    omega_max_v = 700.0 # [rad/s] saturation
+    omega_max_v = 700.0  # [rad/s] saturation
 
-    # Horizontal thrusters (larger, dedicated UW units — placeholder values)
-    kT_h    = 5.0e-3    # [N·s²/rad²] thrust coeff (not used in force-command model)
-    F_h_max = 200.0     # [N] per-thruster force saturation
+    kT_h    = 5.0e-3    # horiz thruster thrust coeff (not used in force-command model)
+    F_h_max = 200.0     # [N] per-thruster saturation
 
-    # Hydrodynamics
-    kd_uw   = np.array([25.0, 35.0, 20.0])  # [N·s/m] directional drag [x, y, z]
-    rho_w   = 1025.0    # [kg/m³] seawater density
-    V_sub   = L_box * W_box * H_box          # [m³] submerged volume
+    rho_w   = 1025.0
+    A_uw    = np.array([W_box*H_box, L_box*H_box, L_box*W_box])      # frontal areas [m²]
+    V_sub   = L_box * W_box * H_box
+
+    # ── Drag coefficients (model-plant mismatch) ─────────────────────────
+    # SIM  = plant (ODE) — true physics;  CTRL = controller assumed model
+    # set equal for no mismatch; perturb C_D_SIM to test robustness
+    C_D_SIM  = np.array([1.0, 1.2, 1.0])   # plant drag coeff [x, y, z]
+    C_D_CTRL = np.array([0, 0, 0])   # controller assumed drag coeff
+
+    @property
+    def m_added(self):
+        """Diagonal added mass [kg] — potential flow estimate for a box body."""
+        return np.array([0.10, 0.40, 0.25]) * self.rho_w * self.V_sub
+
+    @property
+    def kd_lin(self):
+        """Linearised drag slope at UW_LINEARISE_VEL for gain matrix (uses CTRL model).
+        d/dv[-0.5*rho*Cd*A*v*|v|] at v0 = rho*Cd*A*|v0|  (per axis)"""
+        return self.rho_w * self.C_D_CTRL * self.A_uw * np.abs(UW_LINEARISE_VEL)
 
     @property
     def F_buoyancy(self):
@@ -189,49 +233,51 @@ class UWParams:
 
 uw = UWParams()
 
-# Derive residual from compensation percentage (evaluated after uw so F_buoy_gross_net is known)
+M_ADDED_SIM  = M_ADDED_FRAC_SIM  * uw.rho_w * uw.V_sub   # [kg] plant added mass
+M_ADDED_CTRL = M_ADDED_FRAC_CTRL * uw.rho_w * uw.V_sub   # [kg] controller assumed added mass
+
+# residual buoyancy after ballast compensation
 UW_BALLAST_RESIDUAL = (1.0 - BUOYANCY_COMP_PCT / 100.0) * uw.F_buoy_gross_net
 
-print("=" * 58)
-print("  UNDERWATER VEHICLE PARAMETERS")
-print("=" * 58)
-print(f"  {'m':<8}  Total mass              {p.m:.4f}   kg")
-print(f"  {'Ixx':<8}  Roll inertia            {p.Ixx:.4f}   kg·m²")
-print(f"  {'Iyy':<8}  Pitch inertia           {p.Iyy:.4f}   kg·m²")
-print(f"  {'Izz':<8}  Yaw inertia             {p.Izz:.4f}   kg·m²")
-print(f"  {'kT_v':<8}  Vert prop thrust coeff  {uw.kT_v:.2e}  N·s²/rad²")
-print(f"  {'kQ_v':<8}  Vert prop torque coeff  {uw.kQ_v:.2e}  N·m·s²/rad²")
-print(f"  {'tau_m_v':<8}  Vert prop motor lag     {uw.tau_m_v:.4f}   s")
-print(f"  {'kT_h':<8}  Horiz thruster coeff    {uw.kT_h:.2e}  N·s²/rad²")
-print(f"  {'F_buoy':<8}  Gross buoyancy          {uw.F_buoyancy:.2f}   N")
-print(f"  {'F_net':<8}  Gross net buoyancy      {uw.F_buoy_gross_net:.2f}   N")
-print(f"  {'Comp%':<8}  Ballast compensation    {BUOYANCY_COMP_PCT:.2f}   %")
-print(f"  {'Residual':<8}  Ballast residual        {UW_BALLAST_RESIDUAL:.2f}   N (upward)")
-print(f"  {'w_v_eq':<8}  Vert prop eq speed      {-uw.omega_v_eq:.2f}   rad/s  ({uw.omega_v_eq*60/(2*np.pi):.0f} RPM)  (negative = down)")
-print("=" * 58)
+if TRAJ_MODE == "test_time_water":
+    print("=" * 58)
+    print("  UNDERWATER VEHICLE PARAMETERS")
+    print("=" * 58)
+    print(f"  {'m':<8}  Total mass              {p.m:.4f}   kg")
+    print(f"  {'Ixx':<8}  Roll inertia            {p.Ixx:.4f}   kg·m²")
+    print(f"  {'Iyy':<8}  Pitch inertia           {p.Iyy:.4f}   kg·m²")
+    print(f"  {'Izz':<8}  Yaw inertia             {p.Izz:.4f}   kg·m²")
+    print(f"  {'CT_v':<8}  Vert prop thrust coeff (dim'less)  {uw.CT_v:.4e}  [-]")
+    print(f"  {'CQ_v':<8}  Vert prop torque coeff (dim'less)  {uw.CQ_v:.4e}  [-]")
+    print(f"  {'D_v':<8}  Vert prop diameter                 {uw.D_v:.4f}   m")
+    print(f"  {'kT_v':<8}  → kT=CT·ρ·D⁴/(4π²)               {uw.kT_v:.4e}  N·s²/rad²")
+    print(f"  {'kQ_v':<8}  → kQ=CQ·ρ·D⁵/(4π²)               {uw.kQ_v:.4e}  N·m·s²/rad²")
+    print(f"  {'tau_m_v':<8}  Vert prop motor lag     {uw.tau_m_v:.4f}   s")
+    print(f"  {'kT_h':<8}  Horiz thruster coeff    {uw.kT_h:.2e}  N·s²/rad²")
+    print(f"  {'F_buoy':<8}  Gross buoyancy          {uw.F_buoyancy:.2f}   N")
+    print(f"  {'F_net':<8}  Gross net buoyancy      {uw.F_buoy_gross_net:.2f}   N")
+    print(f"  {'Comp%':<8}  Ballast compensation    {BUOYANCY_COMP_PCT:.2f}   %")
+    print(f"  {'Residual':<8}  Ballast residual        {UW_BALLAST_RESIDUAL:.2f}   N (upward)")
+    print(f"  {'w_v_eq':<8}  Vert prop eq speed      {-uw.omega_v_eq:.2f}   rad/s  ({uw.omega_v_eq*60/(2*np.pi):.0f} RPM)  (negative = down)")
+    print(f"  {'A_uw':<8}  Frontal areas [x,y,z]   [{uw.A_uw[0]:.3f}, {uw.A_uw[1]:.3f}, {uw.A_uw[2]:.3f}]  m²")
+    print(f"  {'C_D_SIM':<8}  Drag coeff SIM  [x,y,z] {uw.C_D_SIM.tolist()}")
+    print(f"  {'C_D_CTRL':<8}  Drag coeff CTRL [x,y,z] {uw.C_D_CTRL.tolist()}")
+    print(f"  {'m_a SIM':<8}  Added mass SIM  [x,y,z] [{M_ADDED_SIM[0]:.1f}, {M_ADDED_SIM[1]:.1f}, {M_ADDED_SIM[2]:.1f}]  kg")
+    print(f"  {'m_a CTRL':<8}  Added mass CTRL [x,y,z] [{M_ADDED_CTRL[0]:.1f}, {M_ADDED_CTRL[1]:.1f}, {M_ADDED_CTRL[2]:.1f}]  kg")
+    print("=" * 58)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PID GAINS
-# ══════════════════════════════════════════════════════════════════════════════
-
+# PID gains per mode
 _gains_uw = {
-    # att: inner attitude loop
-    #   phi/theta: Ixx_uw=4.04, Iyy_uw=9.64 kg·m²  → wn=3 rad/s, ζ=0.9
-    #              Kp = I*wn²,  Kd = 2*ζ*wn*I
-    #   psi:       Izz_uw=11.91 kg·m²               → wn=2 rad/s, ζ=0.9
-    # cyl: outer position loop (drag cancelled — see force commands below)
-    #   After drag feedforward the plant is m*x''=Fx_cmd, so
-    #   Kd targets the PD pole directly: wn=sqrt(Kp), ζ=Kd/(2*wn)
     "hold": dict(
         att_Kp    = np.array([36.0,  87.0,  48.0]),
         att_Ki    = np.array([0.2,   0.2,   0.1 ]),
         att_Kd    = np.array([22.0,  52.0,  43.0]),
         att_i_lim = np.array([10.0,  10.0,  5.0 ]),
         att_lim   = 0.30,
-        cyl_Kp    = np.array([0.30, 0.30, 0.20]),   # wn ≈ 0.55, 0.55, 0.45
+        cyl_Kp    = np.array([0.30, 0.30, 0.20]),
         cyl_Ki    = np.array([0.01, 0.01, 0.02]),
-        cyl_Kd    = np.array([1.00, 1.00, 0.80]),   # ζ ≈ 0.9
+        cyl_Kd    = np.array([1.00, 1.00, 0.80]),
         cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
     "custom": dict(
@@ -240,21 +286,21 @@ _gains_uw = {
         att_Kd    = np.array([22.0,  52.0,  43.0]),
         att_i_lim = np.array([10.0,  10.0,  5.0 ]),
         att_lim   = 0.30,
-        cyl_Kp    = np.array([0.60, 0.60, 0.30]),   # wn ≈ 0.77, 0.77, 0.55
+        cyl_Kp    = np.array([0.60, 0.60, 0.30]),
         cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([1.40, 1.40, 0.90]),   # ζ ≈ 0.9
+        cyl_Kd    = np.array([1.40, 1.40, 0.90]),
         cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
     "lawnmower": dict(
-        att_Kp    = np.array([36.0,  87.0,  48.0]),
-        att_Ki    = np.array([0.2,   0.2,   0.1 ]),
-        att_Kd    = np.array([22.0,  52.0,  43.0]),
-        att_i_lim = np.array([10.0,  10.0,  5.0 ]),
+        att_Kp    = np.array([35.75, 255.0,  216.0]),
+        att_Ki    = np.array([0.2,   0.2,    0.1  ]),
+        att_Kd    = np.array([10.23, 53.2,   42.96]),
+        att_i_lim = np.array([10.0,  10.0,   5.0  ]),
         att_lim   = 0.30,
-        cyl_Kp    = np.array([1.00, 1.00, 0.50]),   # wn ≈ 1.0, 1.0, 0.71
-        cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([1.80, 1.80, 1.30]),   # ζ ≈ 0.9
-        cyl_i_lim = np.array([5.0,  5.0,  10.0]),
+        cyl_Kp    = np.array([0.856, 0.932, 0.456]),
+        cyl_Ki    = np.array([0.02,  0.02,  0.05 ]),
+        cyl_Kd    = np.array([1.804, 1.798, 1.368]),
+        cyl_i_lim = np.array([5.0,   5.0,   10.0 ]),
     ),
     "spiral": dict(
         att_Kp    = np.array([36.0,  87.0,  48.0]),
@@ -262,9 +308,9 @@ _gains_uw = {
         att_Kd    = np.array([22.0,  52.0,  43.0]),
         att_i_lim = np.array([10.0,  10.0,  5.0 ]),
         att_lim   = 0.30,
-        cyl_Kp    = np.array([0.80, 0.80, 0.40]),   # wn ≈ 0.89, 0.89, 0.63
+        cyl_Kp    = np.array([0.80, 0.80, 0.40]),
         cyl_Ki    = np.array([0.02, 0.02, 0.05]),
-        cyl_Kd    = np.array([1.60, 1.60, 1.10]),   # ζ ≈ 0.9
+        cyl_Kd    = np.array([1.60, 1.60, 1.10]),
         cyl_i_lim = np.array([5.0,  5.0,  10.0]),
     ),
 }
@@ -281,39 +327,23 @@ cyl_Kd    = _g["cyl_Kd"];  cyl_i_lim = _g["cyl_i_lim"]
 print(f"PID gains       : {_flight_mode} (UW)")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MIXING MATRICES
-# ══════════════════════════════════════════════════════════════════════════════
+# mixing matrices
 
-# ── Vertical props ────────────────────────────────────────────────────────────
-# Folded arm length imported from geometry.py: UW_L_fold = (2*frac-1)*L_arm
-
-# Prop positions in body CoM frame along arm directions
 _arm_rad = np.radians(arm_angles_deg)
 _vert_pos = np.array([
     [UW_L_fold * np.cos(a),
      UW_L_fold * np.sin(a),
-     H_box / 2.0 - CoM[2]]   # top of box, shifted to CoM frame
+     H_box / 2.0 - CoM[2]]
     for a in _arm_rad
-])   # shape (4, 3)
+])
 
-_lv_x = _vert_pos[:, 0]   # x positions of each vertical prop
-_lv_y = _vert_pos[:, 1]   # y positions of each vertical prop
+_lv_x = _vert_pos[:, 0]
+_lv_y = _vert_pos[:, 1]
 
-# Spin directions: diagonal CCW/CW pairs matching aerial X-config
-# arm_angles_deg = [45, 135, 225, 315] → motor 0=FL, 1=RL, 2=RR, 3=FR
-# Diagonal pair A: FL(0) + RR(2) at 45° and 225° → CCW (+1)
-# Diagonal pair B: RL(1) + FR(3) at 135° and 315° → CW  (-1)
-_spin_dir = np.array([+1.0, -1.0, +1.0, -1.0])   # diagonal pairs — alternating
+# diagonal CCW/CW pairs: FL(0)+RR(2) CCW, RL(1)+FR(3) CW
+_spin_dir = np.array([+1.0, -1.0, +1.0, -1.0])
 
-# A_mix_vert maps signed squared speeds [q1, q2, q3, q4] to [Fz_v, tau_phi, tau_theta, tau_psi_v]
-# CONVENTION: positive wi → upward thrust (+z_body), same as aerial.
-# At equilibrium, props spin at negative speed to push DOWN and cancel residual buoyancy.
-#
-# For upward force F = +kT_v*qi in body-z at position r_i = (lv_x_i, lv_y_i, lv_z_i):
-#   tau_x (phi)   =  r_iy * F_z = +lv_y_i * kT_v * qi
-#   tau_y (theta) = -r_ix * F_z = -lv_x_i * kT_v * qi
-#   tau_z (psi)   = kQ_v * spin_dir_i * qi  (reaction torque)
+# positive wi = upward thrust; eq runs negative to cancel buoyancy residual
 A_mix_vert = np.array([
     [ uw.kT_v] * 4,                                    # Fz_v (positive = upward)
     [+uw.kT_v * _lv_y[i] for i in range(4)],           # tau_phi
@@ -326,32 +356,12 @@ A_mix_vert_inv = np.linalg.inv(A_mix_vert)
 print(f"Vertical prop L_fold = {UW_L_fold:.3f} m  (UW_ARM_FOLD_FRAC={UW_ARM_FOLD_FRAC})")
 print(f"A_mix_vert condition number: {np.linalg.cond(A_mix_vert):.1f}")
 
-# ── Horizontal thrusters ──────────────────────────────────────────────────────
-# Positions: FR corner + mirrors. z = 0 (body CoM height) always.
 _px = UW_HORIZ_XY_FR[0]
 _py = abs(UW_HORIZ_XY_FR[1])
 _a  = np.radians(UW_HORIZ_ALPHA)
 
-# Thruster positions in body frame: [FR, FL, RL, RR]
-_horiz_pos = np.array([
-    [ _px, -_py, 0.0],   # FR
-    [ _px,  _py, 0.0],   # FL
-    [-_px,  _py, 0.0],   # RL
-    [-_px, -_py, 0.0],   # RR
-])
-
-# Thrust directions (angle from wall toward interior):
-_horiz_dir = np.array([
-    [+np.cos(_a), +np.sin(_a), 0.0],   # FR: forward + leftward (inward from right wall)
-    [+np.cos(_a), -np.sin(_a), 0.0],   # FL: forward + rightward (inward from left wall)
-    [-np.cos(_a), -np.sin(_a), 0.0],   # RL: backward + rightward
-    [-np.cos(_a), +np.sin(_a), 0.0],   # RR: backward + leftward
-])
-
-# Yaw moment arm: z-component of r_i × d_i
 _arm_yaw = _px * np.sin(_a) + _py * np.cos(_a)
 
-# A_mix_horiz (3x4): maps [Fh_FR, Fh_FL, Fh_RL, Fh_RR] to [Fx, Fy, Mz]
 A_mix_horiz = np.array([
     [+np.cos(_a), +np.cos(_a), -np.cos(_a), -np.cos(_a)],   # Fx
     [+np.sin(_a), -np.sin(_a), -np.sin(_a), +np.sin(_a)],   # Fy
@@ -363,12 +373,10 @@ print(f"Horizontal thruster alpha = {UW_HORIZ_ALPHA} deg,  arm_yaw = {_arm_yaw:.
 print(f"A_mix_horiz condition number: {np.linalg.cond(A_mix_horiz):.1f}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TRAJECTORY BUILDERS
-# ══════════════════════════════════════════════════════════════════════════════
+# --- Trajectory builders ---
 
 def build_custom_traj(segments, t_arr):
-    """Same sparse/dense segment format as quadcopterSC — Cartesian (x,y,z)."""
+    """Same segment format as quadcopterSC, Cartesian (x,y,z)."""
     ref_p = np.zeros((3, len(t_arr)))
     ref_v = np.zeros((3, len(t_arr)))
 
@@ -396,18 +404,11 @@ def build_custom_traj(segments, t_arr):
 
 def _water_timed_waypoints():
     """
-    Build time-stamped (r, theta, z, vr, vtheta, vz) waypoints for the
-    underwater lawnmower or spiral inspection of the monopile.
+    Build time-stamped waypoints for the underwater inspection path.
+    Same approach as _aerial_timed_waypoints(): generate path, classify gaps,
+    apply trap_speeds per segment, project velocities, integrate timestamps.
 
-    Uses IDENTICAL approach to _aerial_timed_waypoints() in quadcopterSC.py:
-      1. Generate all path waypoints (r, theta, z) for full path
-      2. Convert to Cartesian for 3D distance / gap classification
-      3. Classify each gap: 0=vertical strip, 1=horizontal turn (same threshold 0.7)
-      4. Apply trap_speeds to each contiguous same-type segment group
-      5. Project velocity components from path tangent x speed magnitude
-      6. Build timestamps via trapezoidal integration over speed profile
-
-    z=0 at surface, negative downward. Monopile is a constant-radius cylinder.
+    z=0 at surface, negative downward.
     Returns ndarray (M, 7): [t, r, theta, z, vr, vtheta, vz]
     """
     cw      = cameras[water_config["camera_type"]]
@@ -435,7 +436,6 @@ def _water_timed_waypoints():
         n_strips = int(np.ceil(2.0 * np.pi * R_base / strip_w))
         d_theta  = (2.0 * np.pi) / n_strips
 
-        # ── Step 1: generate all (r, theta, z) waypoints for full path ────────
         ra_list, ta_list, za_list = [], [], []
         theta = 0.0
         for s_idx in range(n_strips):
@@ -473,19 +473,16 @@ def _water_timed_waypoints():
         ra = np.full(n_pts, r_inspect)
         n_strips = 0   # used only for print
 
-    # ── Steps 2-6: identical to aerial profiling ───────────────────────────────
     xyz   = np.column_stack([ra * np.cos(ta), ra * np.sin(ta), za])
     N_pts = len(za)
     dists = np.array([np.linalg.norm(xyz[i+1] - xyz[i]) for i in range(N_pts - 1)])
 
-    # Classify gaps: 0=vertical, 1=horizontal
-    gap_type = np.full(N_pts - 1, -1, dtype=int)
+    gap_type = np.full(N_pts - 1, -1, dtype=int)   # 0=vertical strip, 1=horizontal step
     for i in range(N_pts - 1):
         if dists[i] > 1e-10:
             vf = abs(xyz[i+1, 2] - xyz[i, 2]) / dists[i]
             gap_type[i] = 0 if vf > 0.7 else 1
 
-    # trap_speeds per contiguous same-type segment
     speed_arr = np.zeros(N_pts)
     i = 0
     while i < N_pts - 1:
@@ -503,7 +500,6 @@ def _water_timed_waypoints():
         speed_arr[i:j+1] = speeds
         i = j
 
-    # Project velocity components from path tangent x speed
     vr_arr  = np.zeros(N_pts)
     vth_arr = np.zeros(N_pts)
     vz_arr  = np.zeros(N_pts)
@@ -522,7 +518,6 @@ def _water_timed_waypoints():
 
     vr_arr[-1] = vr_arr[-2];  vth_arr[-1] = vth_arr[-2];  vz_arr[-1] = vz_arr[-2]
 
-    # Timestamps: trapezoidal rule over speed profile
     times = [0.0]
     for i in range(1, N_pts):
         d = dists[i-1]
@@ -540,7 +535,7 @@ def _water_timed_waypoints():
 
 
 def build_test_time_water_traj(t_arr):
-    """Interpolate water trajectory onto simulation time vector."""
+    """Interpolate water trajectory onto sim time vector."""
     wp = _water_timed_waypoints()
     ref_p = np.zeros((3, len(t_arr)))
     ref_v = np.zeros((3, len(t_arr)))
@@ -552,26 +547,49 @@ def build_test_time_water_traj(t_arr):
     return ref_p, ref_v, float(wp[-1, 0]), start_xyz, wp
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DISTURBANCE HELPER
-# ══════════════════════════════════════════════════════════════════════════════
+# --- disturbance helper ---
 
 def get_disturbance(t_k):
-    if not DIST_ENABLED:
-        return np.zeros(3), np.zeros(3)
+    """Return (Fd [3], taud [3]) at t_k."""
     Fd, taud = np.zeros(3), np.zeros(3)
-    for row in DISTURBANCES:
-        if row[0] <= t_k < row[1]:
-            Fd   += np.asarray(row[2:5], dtype=float)
-            taud += np.asarray(row[5:8], dtype=float)
+
+    if DIST_ENABLED:
+        for row in DISTURBANCES:
+            if row[0] <= t_k < row[1]:
+                Fd   += np.asarray(row[2:5], dtype=float)
+                taud += np.asarray(row[5:8], dtype=float)
+
+    if IMPULSE_ENABLED:
+        for row in IMPULSES:
+            t_imp = row[0]
+            if t_k <= t_imp < t_k + dt:
+                Fd   += np.asarray(row[1:4], dtype=float) / dt
+                taud += np.asarray(row[4:7], dtype=float) / dt
+
     return Fd, taud
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SIMULATION SETUP
-# ══════════════════════════════════════════════════════════════════════════════
+def get_current(t_k):
+    """Ocean current velocity [vx, vy, vz] at t_k."""
+    if not CURRENT_ENABLED:
+        return np.zeros(3)
+    t_col = CURRENT_PROFILE[:, 0]
+    if CURRENT_INTERP == 'cubic' and len(CURRENT_PROFILE) >= 4:
+        from scipy.interpolate import interp1d
+        f = interp1d(t_col, CURRENT_PROFILE[:, 1:4], axis=0, kind='cubic',
+                     bounds_error=False,
+                     fill_value=(CURRENT_PROFILE[0, 1:4], CURRENT_PROFILE[-1, 1:4]))
+        return f(t_k)
+    return np.array([
+        np.interp(t_k, t_col, CURRENT_PROFILE[:, 1]),
+        np.interp(t_k, t_col, CURRENT_PROFILE[:, 2]),
+        np.interp(t_k, t_col, CURRENT_PROFILE[:, 3]),
+    ])
 
-dt = 0.05   # [s] timestep
+
+# --- Simulation setup ---
+
+dt = 0.05   # [s]
 
 _t_events = [T_BUFFER]
 if DIST_ENABLED and DISTURBANCES:
@@ -615,18 +633,15 @@ elif TRAJ_MODE == "test_time_water":
 else:
     raise ValueError(f"Unknown TRAJ_MODE: '{TRAJ_MODE}'")
 
-# Cylindrical reference for custom (ndarray) and test_time_water
 _USE_CYL_REF = TRAJ_MODE in ("custom", "test_time_water") and isinstance(
     TRAJ_SEGMENTS if TRAJ_MODE == "custom" else True, (np.ndarray, bool))
 
-# Yaw: always face inward toward tower axis
 if _USE_CYL_REF:
     ref_yaw = np.arctan2(np.sin(ref_pos[1, :] + np.pi),
                          np.cos(ref_pos[1, :] + np.pi))
 else:
     ref_yaw = np.zeros(N)
 
-# Feedforward acceleration (centripetal + Coriolis in cylindrical mode)
 if _USE_CYL_REF:
     r_r  = ref_pos[0];  th_r = ref_pos[1]
     vr_r = ref_vel[0];  vth_r = ref_vel[1];  vz_r = ref_vel[2]
@@ -640,13 +655,15 @@ if _USE_CYL_REF:
 else:
     ref_acc = np.gradient(ref_vel, dt, axis=1)
 
+print(f"Drag FF         : {'ON' if USE_DRAG_FF else 'OFF'}")
+print(f"Mass FF         : {'ON' if USE_MASS_FF else 'OFF'}  (added mass compensation)")
+print(f"Cent/Cor FF     : {'ON' if USE_CENT_FF else 'OFF'}  (centripetal/Coriolis ref_acc)")
+print(f"Event trig WP   : {'ON' if USE_EVENT_TRIG else 'OFF'}  (Z tol = {EVENT_Z_TOL} m)")
 print(f"Disturbances    : {'ON' if DIST_ENABLED else 'OFF'}")
 print(f"Plots           : {'ON' if ENABLE_PLOTS else 'OFF'}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PHYSICS FUNCTIONS
-# ══════════════════════════════════════════════════════════════════════════════
+# --- physics functions ---
 
 def rot_ZYX(phi, theta, psi):
     """Body-to-inertial rotation matrix, ZYX Euler."""
@@ -673,15 +690,10 @@ def euler_kin(phi, theta):
     ])
 
 
-def uw_ode(s, wr_vert_cmd, Fh_cmd, Fd, taud):
-    """
-    Nonlinear 6-DOF underwater ODE.
-    s            : state (16,) — [x,y,z, phi,theta,psi, vx,vy,vz, p,q,r, w1,w2,w3,w4]
-    wr_vert_cmd  : signed vertical prop speed commands (4,) [rad/s]
-    Fh_cmd       : signed horizontal thruster force commands (4,) [N]
-    Fd           : disturbance force, inertial (3,)
-    taud         : disturbance torque, body (3,)
-    """
+def uw_ode(s, wr_vert_cmd, Fh_cmd, Fd, taud, v_current=None):
+    """Nonlinear 6-DOF underwater ODE."""
+    if v_current is None:
+        v_current = np.zeros(3)
     euler = s[3:6];   phi, theta, psi = euler
     vel   = s[6:9]
     wb    = s[9:12]
@@ -689,28 +701,20 @@ def uw_ode(s, wr_vert_cmd, Fh_cmd, Fd, taud):
 
     R = rot_ZYX(phi, theta, psi)
 
-    # Vertical prop forces: signed squared speed q_i = w_i * |w_i|
-    q_v  = wr_v * np.abs(wr_v)
-    u_v  = A_mix_vert @ q_v          # [Fz_v, tau_phi, tau_theta, tau_psi_v]
-    # Fz_v > 0 = upward (same as aerial T); negative at eq to cancel buoyancy
+    q_v  = wr_v * np.abs(wr_v)   # signed squared speed
+    u_v  = A_mix_vert @ q_v   # [Fz_v, tau_phi, tau_theta, tau_psi_v]
 
-    # Horizontal thruster forces
     Fx_h      = A_mix_horiz[0, :] @ Fh_cmd
     Fy_h      = A_mix_horiz[1, :] @ Fh_cmd
     tau_psi_h = A_mix_horiz[2, :] @ Fh_cmd
 
-    # Total body force (horizontal from H-thrusters, vertical from V-props)
-    F_body = np.array([Fx_h, Fy_h, u_v[0]])
-
-    # External: residual buoyancy upward after ballast
+    F_body     = np.array([Fx_h, Fy_h, u_v[0]])
     F_buoy_net = np.array([0.0, 0.0, UW_BALLAST_RESIDUAL])
+    v_rel      = vel - v_current
+    F_drag     = -0.5 * uw.rho_w * uw.C_D_SIM * uw.A_uw * v_rel * np.abs(v_rel)
 
-    # Directional drag
-    F_drag = -uw.kd_uw * vel
+    pos_ddot = (R @ F_body + F_buoy_net + F_drag + Fd) / (p.m + M_ADDED_SIM)
 
-    pos_ddot = (R @ F_body + F_buoy_net + F_drag + Fd) / p.m
-
-    # Body torques: phi/theta from V-props, psi from both
     tau_body = np.array([u_v[1], u_v[2], u_v[3] + tau_psi_h]) + taud
     I_mat    = np.diag([p.Ixx, p.Iyy, p.Izz])
     wb_dot   = np.linalg.solve(I_mat, tau_body - np.cross(wb, I_mat @ wb))
@@ -721,34 +725,34 @@ def uw_ode(s, wr_vert_cmd, Fh_cmd, Fd, taud):
     return np.concatenate([vel, euler_dot, pos_ddot, wb_dot, wr_dot])
 
 
-def rk4_step_uw(s, wr_vert_cmd, Fh_cmd, Fd, taud, dt_):
-    k1 = uw_ode(s,              wr_vert_cmd, Fh_cmd, Fd, taud)
-    k2 = uw_ode(s + dt_/2*k1,  wr_vert_cmd, Fh_cmd, Fd, taud)
-    k3 = uw_ode(s + dt_/2*k2,  wr_vert_cmd, Fh_cmd, Fd, taud)
-    k4 = uw_ode(s + dt_*k3,    wr_vert_cmd, Fh_cmd, Fd, taud)
+def rk4_step_uw(s, wr_vert_cmd, Fh_cmd, Fd, taud, dt_, v_current=None):
+    if v_current is None:
+        v_current = np.zeros(3)
+    k1 = uw_ode(s,              wr_vert_cmd, Fh_cmd, Fd, taud, v_current)
+    k2 = uw_ode(s + dt_/2*k1,  wr_vert_cmd, Fh_cmd, Fd, taud, v_current)
+    k3 = uw_ode(s + dt_/2*k2,  wr_vert_cmd, Fh_cmd, Fd, taud, v_current)
+    k4 = uw_ode(s + dt_*k3,    wr_vert_cmd, Fh_cmd, Fd, taud, v_current)
     return s + (dt_/6) * (k1 + 2*k2 + 2*k3 + k4)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN SIMULATION LOOP  (skipped in root_locus mode)
-# ══════════════════════════════════════════════════════════════════════════════
+# --- main sim loop (skipped in root_locus mode) ---
 
 X       = np.zeros((16, N))
-# Equilibrium: negative speed (downward thrust) to cancel upward buoyancy residual
-X[12:16, 0] = -uw.omega_v_eq
+X[12:16, 0] = -uw.omega_v_eq   # negative = downward thrust to cancel buoyancy
 
 if x0_override is not None:
     X[0:3, 0] = x0_override
-X[5, 0] = ref_yaw[0]   # initialise yaw to avoid 180° spike
+X[5, 0] = ref_yaw[0]   # init yaw to avoid 180 deg spike
 
 int_att = np.zeros(3)
 int_pos = np.zeros(3)
 
-# Logs: virtual control inputs [Fz_v, tau_phi, tau_theta, tau_psi]
-U_log_vert = np.zeros((4, N))   # [Fz_v_cmd, tau_phi, tau_theta, tau_psi_v]
-U_log_horiz = np.zeros((3, N))  # [Fx_cmd, Fy_cmd, tau_psi_h]
-Wr_log = np.zeros((4, N))       # commanded vertical prop speeds (signed)
-Fh_log = np.zeros((4, N))       # commanded horizontal thruster forces
+U_log_vert  = np.zeros((4, N))   # [Fz_v_cmd, tau_phi, tau_theta, tau_psi_v]
+U_log_horiz = np.zeros((3, N))   # [Fx_cmd, Fy_cmd, tau_psi_h]
+Wr_log      = np.zeros((4, N))   # commanded vertical prop speeds (signed)
+Fh_log      = np.zeros((4, N))   # commanded horizontal thruster forces
+
+k_ref = 0   # event-triggered reference pointer (equals k when USE_EVENT_TRIG=False)
 
 _sim_iter = range(N - 1) if PLOT_MODE != "root_locus" else []
 if tqdm is not None and PLOT_MODE != "root_locus":
@@ -762,59 +766,65 @@ for k in _sim_iter:
     vel   = s[6:9]
     wb    = s[9:12]
 
-    # ── Outer PID: position error → acceleration commands ─────────────────
+    # reference pointer: advance only when Z has caught up (event-triggered mode)
+    if USE_EVENT_TRIG:
+        if abs(pos[2] - ref_pos[2, k_ref]) < EVENT_Z_TOL and k_ref < N - 1:
+            k_ref += 1
+        kr = k_ref
+    else:
+        kr = k
+
+    # outer PID: position error -> acceleration commands
     if _USE_CYL_REF:
         r_m = max(np.sqrt(pos[0]**2 + pos[1]**2), 1e-6)
         th_m = np.arctan2(pos[1], pos[0])
         cs   = np.cos(th_m);  sn = np.sin(th_m)
 
-        e_r = ref_pos[0, k] - r_m
-        e_th = np.arctan2(np.sin(ref_pos[1, k] - th_m),
-                          np.cos(ref_pos[1, k] - th_m))
-        e_z  = ref_pos[2, k] - pos[2]
+        e_r = ref_pos[0, kr] - r_m
+        e_th = np.arctan2(np.sin(ref_pos[1, kr] - th_m),
+                          np.cos(ref_pos[1, kr] - th_m))
+        e_z  = ref_pos[2, kr] - pos[2]
         e_t  = r_m * e_th
 
         vr_m  =  vel[0]*cs + vel[1]*sn
         vth_m = (-vel[0]*sn + vel[1]*cs) / r_m
-        e_vr  = ref_vel[0, k] - vr_m
-        e_vt  = r_m * (ref_vel[1, k] - vth_m)
-        e_vz  = ref_vel[2, k] - vel[2]
+        e_vr  = ref_vel[0, kr] - vr_m
+        e_vt  = r_m * (ref_vel[1, kr] - vth_m)
+        e_vz  = ref_vel[2, kr] - vel[2]
 
         int_pos = np.clip(int_pos + np.array([e_r, e_t, e_z]) * dt,
                           -cyl_i_lim, cyl_i_lim)
 
-        ra_r = ref_acc[0, k]*cs + ref_acc[1, k]*sn
-        ra_t = -ref_acc[0, k]*sn + ref_acc[1, k]*cs
-        ra_z = ref_acc[2, k]
-
-        a_r = cyl_Kp[0]*e_r + cyl_Ki[0]*int_pos[0] + cyl_Kd[0]*e_vr + ra_r
-        a_t = cyl_Kp[1]*e_t + cyl_Ki[1]*int_pos[1] + cyl_Kd[1]*e_vt + ra_t
-        a_z = cyl_Kp[2]*e_z + cyl_Ki[2]*int_pos[2] + cyl_Kd[2]*e_vz + ra_z
+        a_r = cyl_Kp[0]*e_r + cyl_Ki[0]*int_pos[0] + cyl_Kd[0]*e_vr
+        a_t = cyl_Kp[1]*e_t + cyl_Ki[1]*int_pos[1] + cyl_Kd[1]*e_vt
+        a_z = cyl_Kp[2]*e_z + cyl_Ki[2]*int_pos[2] + cyl_Kd[2]*e_vz
 
         a_cmd = np.array([a_r*cs - a_t*sn, a_r*sn + a_t*cs, a_z])
+        if USE_CENT_FF:
+            a_cmd += ref_acc[:, kr]
 
     else:
-        e_pos = ref_pos[:, k] - pos
-        e_vel = ref_vel[:, k] - vel
+        e_pos = ref_pos[:, kr] - pos
+        e_vel = ref_vel[:, kr] - vel
         int_pos = np.clip(int_pos + e_pos * dt, -cyl_i_lim, cyl_i_lim)
-        a_cmd = cyl_Kp * e_pos + cyl_Ki * int_pos + cyl_Kd * e_vel + ref_acc[:, k]
+        a_cmd = cyl_Kp * e_pos + cyl_Ki * int_pos + cyl_Kd * e_vel
+        if USE_CENT_FF:
+            a_cmd += ref_acc[:, kr]
 
-    # ── Direct force allocation with drag feedforward ─────────────────────
-    # Water drag in the ODE is F_drag = -kd_uw * vel (opposes motion).
-    # Adding kd_uw * vel to the force command cancels it, leaving the plant
-    # as m*x'' = m*a_cmd (ideal integrator chain).  This eliminates the
-    # steady-state lag kd*v_ref/(m*Kp) that would otherwise scale with speed.
-    Fx_cmd   = p.m * a_cmd[0] + uw.kd_uw[0] * vel[0]
-    Fy_cmd   = p.m * a_cmd[1] + uw.kd_uw[1] * vel[1]
-    Fz_v_cmd = p.m * a_cmd[2] - UW_BALLAST_RESIDUAL + uw.kd_uw[2] * vel[2]
+    # direct force allocation: controller uses CTRL model (not SIM)
+    _m_eff   = p.m + M_ADDED_CTRL if USE_MASS_FF else np.full(3, p.m)
+    _drag_ff = 0.5 * uw.rho_w * uw.C_D_CTRL * uw.A_uw * vel * np.abs(vel) if USE_DRAG_FF else np.zeros(3)
+    Fx_cmd   = _m_eff[0] * a_cmd[0] + _drag_ff[0]
+    Fy_cmd   = _m_eff[1] * a_cmd[1] + _drag_ff[1]
+    Fz_v_cmd = _m_eff[2] * a_cmd[2] - UW_BALLAST_RESIDUAL + _drag_ff[2]
 
     U_log_horiz[0, k] = Fx_cmd
     U_log_horiz[1, k] = Fy_cmd
 
-    # ── Inner attitude PID: keep phi=theta=0, track psi reference ─────────
+    # inner attitude PID: keep phi=theta=0, track psi
     phi_d   = 0.0
     theta_d = 0.0
-    psi_d   = ref_yaw[k]
+    psi_d   = ref_yaw[kr]
 
     e_att    = np.array([phi_d - phi, theta_d - theta, psi_d - psi])
     e_att[2] = np.arctan2(np.sin(e_att[2]), np.cos(e_att[2]))
@@ -826,7 +836,6 @@ for k in _sim_iter:
     tau_theta_cmd = tau_cmd[1]
     tau_psi_cmd   = tau_cmd[2]
 
-    # ── Vertical prop mixing: [Fz_v, tau_phi, tau_theta, 0] → motor speeds ─
     u_vert = np.array([Fz_v_cmd, tau_phi_cmd, tau_theta_cmd, 0.0])
     U_log_vert[:, k] = u_vert
 
@@ -835,11 +844,10 @@ for k in _sim_iter:
     wr_v_cmd = np.clip(wr_v_cmd, -uw.omega_max_v, uw.omega_max_v)
     Wr_log[:, k] = wr_v_cmd
 
-    # ── Horizontal thruster mixing ────────────────────────────────────────
-    # a_cmd and the drag-compensation term are in INERTIAL frame.
-    # A_mix_horiz produces BODY-frame forces.  Must rotate inertial→body
-    # before thruster allocation, otherwise at psi=π (inspection heading)
-    # every x-y force is applied backwards and the drone flies away.
+    # horizontal thruster mixing
+    # a_cmd is in inertial frame but A_mix_horiz gives body-frame forces
+    # must rotate inertial->body first; at psi=pi (inspection heading) failing to
+    # do this would flip the x-y forces and send the drone the wrong way
     R_cur = rot_ZYX(phi, theta, psi)
     _Fxy_body = R_cur.T @ np.array([Fx_cmd, Fy_cmd, 0.0])
     u_horiz = np.array([_Fxy_body[0], _Fxy_body[1], tau_psi_cmd])
@@ -848,29 +856,21 @@ for k in _sim_iter:
     Fh_cmd_k = np.clip(Fh_cmd_k, -uw.F_h_max, uw.F_h_max)
     Fh_log[:, k] = Fh_cmd_k
 
-    # ── Disturbance + RK4 integrate ────────────────────────────────────────
-    Fd, taud = get_disturbance(t[k])
-    X[:, k+1] = rk4_step_uw(s, wr_v_cmd, Fh_cmd_k, Fd, taud, dt)
+    Fd, taud   = get_disturbance(t[k])
+    v_current_k = get_current(t[k])
+    X[:, k+1] = rk4_step_uw(s, wr_v_cmd, Fh_cmd_k, Fd, taud, dt, v_current_k)
 
 U_log_vert[:, -1]  = U_log_vert[:, -2]
 U_log_horiz[:, -1] = U_log_horiz[:, -2]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LINEARISATION around UW equilibrium
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Equilibrium: props at negative speed (downward thrust cancels buoyancy residual)
-# ψ = π: drone faces inward toward tower, matching the inspection ref_yaw.
-# This is the correct operating point for the root locus — without it the
-# x-y rotation effect (R.T at ψ=π negates x,y forces) is not captured.
-_wr_v_eq = -uw.omega_v_eq            # signed equilibrium speed (negative = downward)
+_wr_v_eq = -uw.omega_v_eq   # negative = downward thrust to cancel buoyancy
 _s0_uw   = np.zeros(16)
-_s0_uw[2]     = UW_LINEARISE_DEPTH   # depth
-_s0_uw[5]     = np.pi                # psi = π (facing inward, inspection heading)
-_s0_uw[12:16] = _wr_v_eq             # vertical props at equilibrium (negative)
+_s0_uw[2]     = UW_LINEARISE_DEPTH
+_s0_uw[5]     = UW_LINEARISE_PSI
+_s0_uw[6:9]   = UW_LINEARISE_VEL
+_s0_uw[12:16] = _wr_v_eq
 
-# Input: [w_vert_cmd(4), Fh_cmd(4)] = 8 inputs
 _u0_uw = np.concatenate([np.full(4, _wr_v_eq), np.zeros(4)])
 _F0_uw = np.zeros(3);   _td0_uw = np.zeros(3)
 _eps   = 1e-5
@@ -900,50 +900,32 @@ print(f"\nUW linearised system: {ns_uw} states, {nu_uw} inputs  "
 print(f"Open-loop poles:\n{np.sort_complex(np.linalg.eigvals(A_lin_uw))}")
 
 
-# ── Closed-loop gain matrix for UW root locus ─────────────────────────────────
-
-def build_K_cl_uw(pKp, pKi, pKd, aKp, aKi, aKd, psi_lin=np.pi):
-    """
-    Returns K_uw (8 x 16): linearised gain from state → [wr_vert_cmd(4), Fh_cmd(4)].
-    A_cl_uw = A_lin_uw + B_lin_uw @ K_uw
-
-    psi_lin: linearisation heading [rad].  Use np.pi for the inspection case
-    (drone faces inward).  The simulation rotates inertial force commands to
-    body frame via R.T(psi); this function applies the same rotation so the
-    root locus is consistent with what the nonlinear sim actually does.
-    """
-    m   = p.m
+def build_K_cl_uw(pKp, pKd, aKp, aKd, psi_lin=np.pi):
+    """Returns K_uw (8x16) mapping state to [wr_vert_cmd(4), Fh_cmd(4)]."""
     wrv = max(abs(_wr_v_eq), 1e-3)   # magnitude of eq speed for linearisation
-    cp, sp = np.cos(psi_lin), np.sin(psi_lin)   # body←inertial rotation at psi_lin
+    cp, sp = np.cos(psi_lin), np.sin(psi_lin)   # body<-inertial at psi_lin
 
-    # Virtual input gains for vertical system (4 x 16)
-    # Fz_v_cmd = m*a_cmd[2] - RESIDUAL + kd_z*vz   (drag feedforward included)
-    # d(Fz_v)/dz  = -m*Kp[2]
-    # d(Fz_v)/dvz = -m*Kd[2] + kd_z   ← drag term shifts the vz gain
+    m_eff  = p.m + M_ADDED_CTRL   # effective mass per axis (controller model)
+    kd_lin = uw.kd_lin            # linearised drag at reference speed
+
     Kv_vert = np.zeros((4, 16))
-    Kv_vert[0, 2]  = -(m * pKp[2])                    # Fz_v ← z
-    Kv_vert[0, 8]  = -(m * pKd[2]) + uw.kd_uw[2]      # Fz_v ← vz  (+kd cancels drag)
-    Kv_vert[1, 3]  = -aKp[0]                           # tau_phi ← phi
-    Kv_vert[1, 9]  = -aKd[0]                           # tau_phi ← p
-    Kv_vert[2, 4]  = -aKp[1]                           # tau_theta ← theta
-    Kv_vert[2, 10] = -aKd[1]                           # tau_theta ← q
+    Kv_vert[0, 2]  = -(m_eff[2] * pKp[2])
+    Kv_vert[0, 8]  = -(m_eff[2] * pKd[2]) + kd_lin[2]
+    Kv_vert[1, 3]  = -aKp[0]
+    Kv_vert[1, 9]  = -aKd[0]
+    Kv_vert[2, 4]  = -aKp[1]
+    Kv_vert[2, 10] = -aKd[1]
 
     K_vert = (1.0 / (2.0 * wrv)) * A_mix_vert_inv @ Kv_vert   # (4 x 16)
 
-    # Virtual input gains for horizontal system (3 x 16)
-    # Compute inertial-frame gains first, then rotate to body frame.
-    # d(Fx_inertial)/dx = -m*Kp[0],  d(Fx_inertial)/dvx = -m*Kd[0]+kd_x
-    # Body←inertial rotation (R.T at psi_lin) is applied to rows 0 and 1.
-    # At psi_lin=π: rows 0,1 simply negate — body x points in -inertial x.
     Kv_iner = np.zeros((3, 16))
-    Kv_iner[0, 0]  = -(m * pKp[0])                    # Fx_iner ← x
-    Kv_iner[0, 6]  = -(m * pKd[0]) + uw.kd_uw[0]     # Fx_iner ← vx
-    Kv_iner[1, 1]  = -(m * pKp[1])                    # Fy_iner ← y
-    Kv_iner[1, 7]  = -(m * pKd[1]) + uw.kd_uw[1]     # Fy_iner ← vy
-    Kv_iner[2, 5]  = -aKp[2]                           # tau_psi ← psi (no rotation)
-    Kv_iner[2, 11] = -aKd[2]                           # tau_psi ← r
+    Kv_iner[0, 0]  = -(m_eff[0] * pKp[0])
+    Kv_iner[0, 6]  = -(m_eff[0] * pKd[0]) + kd_lin[0]
+    Kv_iner[1, 1]  = -(m_eff[1] * pKp[1])
+    Kv_iner[1, 7]  = -(m_eff[1] * pKd[1]) + kd_lin[1]
+    Kv_iner[2, 5]  = -aKp[2]   # tau_psi from psi
+    Kv_iner[2, 11] = -aKd[2]
 
-    # Rotate rows 0,1 from inertial to body (R.T_z = [[cp,sp],[-sp,cp]])
     Kv_horiz = Kv_iner.copy()
     Kv_horiz[0, :] =  cp * Kv_iner[0, :] + sp * Kv_iner[1, :]
     Kv_horiz[1, :] = -sp * Kv_iner[0, :] + cp * Kv_iner[1, :]
@@ -953,7 +935,6 @@ def build_K_cl_uw(pKp, pKi, pKd, aKp, aKi, aKd, psi_lin=np.pi):
     return np.vstack([K_vert, K_horiz])     # (8 x 16)
 
 
-# ── Convert cylindrical ref to Cartesian for plotting ─────────────────────────
 if _USE_CYL_REF:
     _r   = ref_pos[0];  _th = ref_pos[1]
     _vr  = ref_vel[0];  _vth = ref_vel[1]
@@ -965,10 +946,6 @@ else:
     ref_pos_cart = ref_pos
     ref_vel_cart = ref_vel
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TRACKING ERROR SUMMARY
-# ══════════════════════════════════════════════════════════════════════════════
 
 if PLOT_MODE == "sim":
     print(f"\n{'═'*56}")
@@ -988,89 +965,161 @@ if PLOT_MODE == "sim":
         for i, ax in enumerate(['x','y','z']):
             print(f"  pos {ax}  : mean={np.abs(_ep[i]).mean():.3f} m   max={np.abs(_ep[i]).max():.3f} m")
 
-    # ── Actuator ceiling requirements ─────────────────────────────────────────
-    def _rpm(w): return abs(w) * 60.0 / (2.0 * np.pi)
+    STEP_ANALYSIS_WINDOW   = 20.0   # [s]
+    SETTLING_THRESHOLD_PCT =  2.0   # [%] settling band
+    _step_vis = None
 
-    _wv  = X[12:16, :]                          # actual signed prop speeds (4, N)
-    _wvc = Wr_log                                # commanded (4, N)
+    if TRAJ_MODE == "custom" and not _USE_CYL_REF:
+        _rp = ref_pos_cart
+        _step_k = None
+        for _k in range(1, N):
+            if np.linalg.norm(_rp[:, _k] - _rp[:, _k-1]) > 1e-6:
+                _step_k = _k
+                break
 
-    _wv_max  = float(np.max(_wv))               # most positive (upward-thrust direction)
-    _wv_min  = float(np.min(_wv))               # most negative (downward-thrust direction)
-    _wv_peak = float(np.max(np.abs(_wv)))       # largest absolute speed
-    _wv_eq   = -uw.omega_v_eq                   # signed design equilibrium
+        if _step_k is not None:
+            _t_step  = t[_step_k]
+            _t_end_w = _t_step + STEP_ANALYSIS_WINDOW
+            _win     = (t >= _t_step) & (t <= _t_end_w)
+            _t_w     = t[_win]
+            _x_w     = X[0:3, _win]
+            _step_mag  = _rp[:, _step_k] - _rp[:, _step_k - 1]
+            _final_ref = _rp[:, -1]
+            _step_vis  = [None, None, None]
 
-    # Angular acceleration from first-order motor model: dw/dt = (w_cmd - w) / tau_m_v
-    _alpha_v = np.abs(_wvc[:, :-1] - _wv[:, :-1]) / uw.tau_m_v
-    _alpha_v_max = float(np.max(_alpha_v))
-    # Worst-case time to sweep the full bidirectional range at peak acceleration
-    _t_sweep_v = (2.0 * _wv_peak) / _alpha_v_max if _alpha_v_max > 0 else float('inf')
+            print(f"\n{'═'*60}")
+            print(f"  STEP RESPONSE ANALYSIS  (window = {STEP_ANALYSIS_WINDOW:.0f} s after step)")
+            print(f"  Step at t = {_t_step:.2f} s  |  settling band = ±{SETTLING_THRESHOLD_PCT:.1f}%")
+            print(f"{'═'*60}")
+            print(f"  {'Axis':<6} {'Step':>8} {'Rise time':>12} {'Overshoot':>12} {'Settling':>12}")
+            print(f"  {'─'*56}")
 
-    # Thrust: T_i = kT_v * q_i where q_i = w_i * |w_i| (signed)
-    _qv      = _wv * np.abs(_wv)
-    _T_up    = float(np.max(_qv)) * uw.kT_v     # max upward thrust per prop
-    _T_dn    = abs(float(np.min(_qv))) * uw.kT_v # max downward thrust per prop
+            for _i, _ax in enumerate(['x', 'y', 'z']):
+                _mag = _step_mag[_i]
+                if abs(_mag) < 1e-6:
+                    print(f"  {_ax:<6}  (no step on this axis)")
+                    continue
+                _act  = _x_w[_i]
+                _err  = _act - _final_ref[_i]
+                _band = abs(_mag) * SETTLING_THRESHOLD_PCT / 100.0
+                _10 = 0.10 * _mag;  _90 = 0.90 * _mag
+                _delta = _act - _act[0]
+                _rise_idx10 = np.where(np.abs(_delta) >= np.abs(_10))[0]
+                _rise_idx90 = np.where(np.abs(_delta) >= np.abs(_90))[0]
+                _rise = ((_t_w[_rise_idx90[0]] - _t_w[_rise_idx10[0]])
+                         if len(_rise_idx10) and len(_rise_idx90) else float('nan'))
+                _peak = np.max(_act) if _mag > 0 else np.min(_act)
+                _overshoot_pct = 100.0 * (_peak - _final_ref[_i]) / abs(_mag)
+                _unsettled = np.where(np.abs(_err) > _band)[0]
+                if len(_unsettled):
+                    _j = _unsettled[-1]
+                    if _j + 1 < len(_t_w):
+                        _e0, _e1 = np.abs(_err[_j]), np.abs(_err[_j + 1])
+                        _frac = (_band - _e0) / (_e1 - _e0) if (_e1 - _e0) != 0 else 0.0
+                        _t_settle_abs = float(_t_w[_j]) + _frac * float(_t_w[_j + 1] - _t_w[_j])
+                    else:
+                        _t_settle_abs = float(_t_w[_j])
+                    _settle = _t_settle_abs - _t_step
+                else:
+                    _settle = 0.0
+                    _t_settle_abs = _t_step
 
-    # Reaction torque and power per prop
-    _Q_v_max = uw.kQ_v * _wv_peak**2
-    _P_v_max = uw.kQ_v * _wv_peak**3            # P ≈ torque × speed
+                _step_vis[_i] = dict(
+                    final_ref    = _final_ref[_i],
+                    band         = _band,
+                    t_rise_abs   = float(_t_w[_rise_idx90[0]]) if len(_rise_idx90) else float('nan'),
+                    t_settle_abs = _t_settle_abs,
+                )
 
-    # Horizontal thrusters (instantaneous model, no angular acceleration)
-    _fh      = Fh_log                            # (4, N)  N per thruster
-    _fh_max  = float(np.max(_fh))
-    _fh_min  = float(np.min(_fh))
-    _fh_peak = float(np.max(np.abs(_fh)))
-    _fh_util = 100.0 * _fh_peak / uw.F_h_max
-    # Reconstruct net Fx, Fy, Mz from thruster forces to get peak resultants
-    _Fx_hist = A_mix_horiz[0, :] @ _fh           # (N,)
-    _Fy_hist = A_mix_horiz[1, :] @ _fh
-    _Mz_hist = A_mix_horiz[2, :] @ _fh
-    _Fxy_peak = float(np.max(np.sqrt(_Fx_hist**2 + _Fy_hist**2)))
-    _Mz_peak  = float(np.max(np.abs(_Mz_hist)))
-    # Force rate of change (fd/dt via finite difference)
-    _fh_dot_max = float(np.max(np.abs(np.diff(_fh, axis=1)))) / dt
+                _rise_str   = f"{_rise:.2f} s"   if not np.isnan(_rise) else "n/a"
+                _over_str   = f"{_overshoot_pct:+.1f} %"
+                _settle_str = f"{_settle:.2f} s" if _settle < STEP_ANALYSIS_WINDOW else f">{STEP_ANALYSIS_WINDOW:.0f} s"
+                print(f"  {_ax:<6}  {_mag:>+7.3f} m  {_rise_str:>12}  {_over_str:>12}  {_settle_str:>12}")
 
-    W = 64
-    print(f"\n{'═'*W}")
-    print("  VERTICAL PROP CEILING REQUIREMENTS  (motor / ESC sizing)")
-    print(f"{'═'*W}")
-    print(f"  {'Design equilibrium':<34}  {_wv_eq:>+9.1f} rad/s  ({_rpm(_wv_eq):>6.0f} RPM)")
-    print(f"  {'Saturation limit (bidirectional)':<34}  {'+/-':>4} {uw.omega_max_v:>5.1f} rad/s  ({_rpm(uw.omega_max_v):>6.0f} RPM)")
-    print(f"  {'─'*(W-2)}")
-    print(f"  {'Max speed reached (upward dir)':<34}  {_wv_max:>+9.1f} rad/s  ({_rpm(_wv_max):>6.0f} RPM)")
-    print(f"  {'Min speed reached (downward dir)':<34}  {_wv_min:>+9.1f} rad/s  ({_rpm(_wv_min):>6.0f} RPM)")
-    print(f"  {'Peak absolute speed':<34}  {_wv_peak:>9.1f} rad/s  ({_rpm(_wv_peak):>6.0f} RPM)")
-    print(f"  {'Saturation margin remaining':<34}  {uw.omega_max_v - _wv_peak:>9.1f} rad/s  ({_rpm(uw.omega_max_v - _wv_peak):>6.0f} RPM)")
-    print(f"  {'Saturation utilisation':<34}  {100*_wv_peak/uw.omega_max_v:>9.1f} %")
-    print(f"  {'─'*(W-2)}")
-    print(f"  {'Max angular acceleration':<34}  {_alpha_v_max:>9.0f} rad/s²")
-    print(f"  {'Min time to sweep full range':<34}  {_t_sweep_v:>9.3f} s  (2*peak / max_alpha)")
-    print(f"  {'─'*(W-2)}")
-    print(f"  {'Max upward thrust   (per prop)':<34}  {_T_up:>9.2f} N")
-    print(f"  {'Max downward thrust (per prop)':<34}  {_T_dn:>9.2f} N")
-    print(f"  {'Max upward thrust   (4 props)':<34}  {4*_T_up:>9.2f} N")
-    print(f"  {'Max downward thrust (4 props)':<34}  {4*_T_dn:>9.2f} N")
-    print(f"  {'Equilibrium downward thrust':<34}  {UW_BALLAST_RESIDUAL:>9.2f} N  (= ballast residual)")
-    print(f"  {'─'*(W-2)}")
-    print(f"  {'Max reaction torque (per prop)':<34}  {_Q_v_max:>9.4f} N·m")
-    print(f"  {'Max power estimate  (per prop)':<34}  {_P_v_max:>9.2f} W   (kQ × w³)")
-    print(f"\n  HORIZONTAL THRUSTER CEILING REQUIREMENTS")
-    print(f"  {'─'*(W-2)}")
-    print(f"  {'Saturation limit (per thruster)':<34}  {'+/-':>4} {uw.F_h_max:>5.1f} N")
-    print(f"  {'Max force reached (per thruster)':<34}  {_fh_max:>9.2f} N")
-    print(f"  {'Min force reached (per thruster)':<34}  {_fh_min:>9.2f} N")
-    print(f"  {'Peak absolute (per thruster)':<34}  {_fh_peak:>9.2f} N")
-    print(f"  {'Saturation utilisation':<34}  {_fh_util:>9.1f} %")
-    print(f"  {'Peak resultant Fx (net, body)':<34}  {float(np.max(np.abs(_Fx_hist))):>9.2f} N")
-    print(f"  {'Peak resultant Fy (net, body)':<34}  {float(np.max(np.abs(_Fy_hist))):>9.2f} N")
-    print(f"  {'Peak combined Fxy (net, body)':<34}  {_Fxy_peak:>9.2f} N")
-    print(f"  {'Peak yaw moment Mz (net, body)':<34}  {_Mz_peak:>9.2f} N·m")
-    print(f"  {'Max force rate of change':<34}  {_fh_dot_max:>9.1f} N/s  (per thruster)")
-    print(f"{'═'*W}")
+            print(f"  {'─'*56}")
+
+    if TRAJ_MODE == "test_time_water":
+        # actuator ceiling requirements
+        def _rpm(w): return abs(w) * 60.0 / (2.0 * np.pi)
+
+        _wv  = X[12:16, :]                          # actual signed prop speeds (4, N)
+        _wvc = Wr_log                                # commanded (4, N)
+
+        _wv_max  = float(np.max(_wv))               # most positive (upward-thrust direction)
+        _wv_min  = float(np.min(_wv))               # most negative (downward-thrust direction)
+        _wv_peak = float(np.max(np.abs(_wv)))       # largest absolute speed
+        _wv_eq   = -uw.omega_v_eq                   # signed design equilibrium
+
+        # angular accel from first-order motor model
+        _alpha_v = np.abs(_wvc[:, :-1] - _wv[:, :-1]) / uw.tau_m_v
+        _alpha_v_max = float(np.max(_alpha_v))
+        # Worst-case time to sweep the full bidirectional range at peak acceleration
+        _t_sweep_v = (2.0 * _wv_peak) / _alpha_v_max if _alpha_v_max > 0 else float('inf')
+
+        # thrust per prop
+        _qv      = _wv * np.abs(_wv)
+        _T_up    = float(np.max(_qv)) * uw.kT_v     # max upward thrust per prop
+        _T_dn    = abs(float(np.min(_qv))) * uw.kT_v # max downward thrust per prop
+
+        # reaction torque and power
+        _Q_v_max = uw.kQ_v * _wv_peak**2
+        _P_v_max = uw.kQ_v * _wv_peak**3            # P ≈ torque × speed
+
+        # horizontal thrusters
+        _fh      = Fh_log                            # (4, N)  N per thruster
+        _fh_max  = float(np.max(_fh))
+        _fh_min  = float(np.min(_fh))
+        _fh_peak = float(np.max(np.abs(_fh)))
+        _fh_util = 100.0 * _fh_peak / uw.F_h_max
+        # net Fx, Fy, Mz from thruster history
+        _Fx_hist = A_mix_horiz[0, :] @ _fh           # (N,)
+        _Fy_hist = A_mix_horiz[1, :] @ _fh
+        _Mz_hist = A_mix_horiz[2, :] @ _fh
+        _Fxy_peak = float(np.max(np.sqrt(_Fx_hist**2 + _Fy_hist**2)))
+        _Mz_peak  = float(np.max(np.abs(_Mz_hist)))
+        # force rate of change via finite diff
+        _fh_dot_max = float(np.max(np.abs(np.diff(_fh, axis=1)))) / dt
+
+        W = 64
+        print(f"\n{'═'*W}")
+        print("  VERTICAL PROP CEILING REQUIREMENTS  (motor / ESC sizing)")
+        print(f"{'═'*W}")
+        print(f"  {'Design equilibrium':<34}  {_wv_eq:>+9.1f} rad/s  ({_rpm(_wv_eq):>6.0f} RPM)")
+        print(f"  {'Saturation limit (bidirectional)':<34}  {'+/-':>4} {uw.omega_max_v:>5.1f} rad/s  ({_rpm(uw.omega_max_v):>6.0f} RPM)")
+        print(f"  {'─'*(W-2)}")
+        print(f"  {'Max speed reached (upward dir)':<34}  {_wv_max:>+9.1f} rad/s  ({_rpm(_wv_max):>6.0f} RPM)")
+        print(f"  {'Min speed reached (downward dir)':<34}  {_wv_min:>+9.1f} rad/s  ({_rpm(_wv_min):>6.0f} RPM)")
+        print(f"  {'Peak absolute speed':<34}  {_wv_peak:>9.1f} rad/s  ({_rpm(_wv_peak):>6.0f} RPM)")
+        print(f"  {'Saturation margin remaining':<34}  {uw.omega_max_v - _wv_peak:>9.1f} rad/s  ({_rpm(uw.omega_max_v - _wv_peak):>6.0f} RPM)")
+        print(f"  {'Saturation utilisation':<34}  {100*_wv_peak/uw.omega_max_v:>9.1f} %")
+        print(f"  {'─'*(W-2)}")
+        print(f"  {'Max angular acceleration':<34}  {_alpha_v_max:>9.0f} rad/s²")
+        print(f"  {'Min time to sweep full range':<34}  {_t_sweep_v:>9.3f} s  (2*peak / max_alpha)")
+        print(f"  {'─'*(W-2)}")
+        print(f"  {'Max upward thrust   (per prop)':<34}  {_T_up:>9.2f} N")
+        print(f"  {'Max downward thrust (per prop)':<34}  {_T_dn:>9.2f} N")
+        print(f"  {'Max upward thrust   (4 props)':<34}  {4*_T_up:>9.2f} N")
+        print(f"  {'Max downward thrust (4 props)':<34}  {4*_T_dn:>9.2f} N")
+        print(f"  {'Equilibrium downward thrust':<34}  {UW_BALLAST_RESIDUAL:>9.2f} N  (= ballast residual)")
+        print(f"  {'─'*(W-2)}")
+        print(f"  {'Max reaction torque (per prop)':<34}  {_Q_v_max:>9.4f} N·m")
+        print(f"  {'Max power estimate  (per prop)':<34}  {_P_v_max:>9.2f} W   (kQ × w³)")
+        print(f"\n  HORIZONTAL THRUSTER CEILING REQUIREMENTS")
+        print(f"  {'─'*(W-2)}")
+        print(f"  {'Saturation limit (per thruster)':<34}  {'+/-':>4} {uw.F_h_max:>5.1f} N")
+        print(f"  {'Max force reached (per thruster)':<34}  {_fh_max:>9.2f} N")
+        print(f"  {'Min force reached (per thruster)':<34}  {_fh_min:>9.2f} N")
+        print(f"  {'Peak absolute (per thruster)':<34}  {_fh_peak:>9.2f} N")
+        print(f"  {'Saturation utilisation':<34}  {_fh_util:>9.1f} %")
+        print(f"  {'Peak resultant Fx (net, body)':<34}  {float(np.max(np.abs(_Fx_hist))):>9.2f} N")
+        print(f"  {'Peak resultant Fy (net, body)':<34}  {float(np.max(np.abs(_Fy_hist))):>9.2f} N")
+        print(f"  {'Peak combined Fxy (net, body)':<34}  {_Fxy_peak:>9.2f} N")
+        print(f"  {'Peak yaw moment Mz (net, body)':<34}  {_Mz_peak:>9.2f} N·m")
+        print(f"  {'Max force rate of change':<34}  {_fh_dot_max:>9.1f} N/s  (per thruster)")
+        print(f"{'═'*W}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PLOTS
-# ══════════════════════════════════════════════════════════════════════════════
+# --- plots ---
 
 if PLOT_MODE not in ("sim", "root_locus"):
     print("Plots suppressed.")
@@ -1085,15 +1134,15 @@ elif PLOT_MODE == "root_locus":
     _z3  = np.zeros(3)
 
     def _inner_poles_uw():
-        K = build_K_cl_uw(_z3, _z3, _z3, _aKp, _z3, _aKd, psi_lin=np.pi)
+        K = build_K_cl_uw(_z3, _z3, _aKp, _aKd, psi_lin=np.pi)
         return np.linalg.eigvals(A_lin_uw + B_lin_uw @ K)
 
     def _A_inner_cl_uw():
-        K = build_K_cl_uw(_z3, _z3, _z3, _aKp, _z3, _aKd, psi_lin=np.pi)
+        K = build_K_cl_uw(_z3, _z3, _aKp, _aKd, psi_lin=np.pi)
         return A_lin_uw + B_lin_uw @ K
 
     def _full_poles_uw():
-        K = build_K_cl_uw(_pKp, _z3, _pKd, _aKp, _z3, _aKd, psi_lin=np.pi)
+        K = build_K_cl_uw(_pKp, _pKd, _aKp, _aKd, psi_lin=np.pi)
         return np.linalg.eigvals(A_lin_uw + B_lin_uw @ K)
 
     fig_rl = plt.figure(figsize=(20, 13))
@@ -1123,8 +1172,8 @@ elif PLOT_MODE == "root_locus":
     ol_poles_uw = np.linalg.eigvals(A_lin_uw)
 
     ax_in.scatter(ol_poles_uw.real, ol_poles_uw.imag,
-                  marker='o', s=50, color='lightgray', edgecolors='gray',
-                  lw=1, label='Plant (open-loop UW)', zorder=3)
+                  marker='x', s=80, color='red', lw=1.5,
+                  label='Plant (open-loop UW)', zorder=7)
     ip0   = _inner_poles_uw()
     sc_in = ax_in.scatter(ip0.real, ip0.imag,
                           marker='x', s=130, lw=2.5,
@@ -1141,7 +1190,6 @@ elif PLOT_MODE == "root_locus":
                             color='royalblue', label='Full closed-loop', zorder=5)
     ax_out.legend(loc='upper right', fontsize=8)
 
-    # Inner loop: auto-scale to show all poles (including fast motor poles)
     for ax, poles_list in [(ax_in, [ol_poles_uw, ip0])]:
         all_r = np.concatenate([p_.real for p_ in poles_list])
         all_i = np.concatenate([p_.imag for p_ in poles_list])
@@ -1151,10 +1199,7 @@ elif PLOT_MODE == "root_locus":
         ax.set_ylim(-max(abs(all_i).max() + pad_i, 0.5),
                      max(abs(all_i).max() + pad_i, 0.5))
 
-    # Outer loop: zoom in on SLOW poles only.  Motor poles (Re ≈ -17) and fast
-    # attitude poles are off-screen intentionally — they barely move when outer
-    # loop gains change.  The interesting region is near the origin where the
-    # position poles migrate as cyl_Kp / cyl_Kd are adjusted.
+    # zoom outer to slow poles only — motor/fast-att poles are off-screen and don't shift with pos gains
     _slow = lambda poles: poles[poles.real > -10.0]
     _sp0  = np.concatenate([_slow(icp0), _slow(fp0)])
     _sr   = _sp0.real if len(_sp0) > 0 else np.array([-3.0, 0.0])
@@ -1177,17 +1222,17 @@ elif PLOT_MODE == "root_locus":
         fp  = _full_poles_uw()
         sc_ref.set_offsets(np.c_[icp.real, icp.imag])
         sc_out.set_offsets(np.c_[fp.real, fp.imag])
-        fig_rl.canvas.draw_idle()   # scatter set_offsets does not change axis limits
+        fig_rl.canvas.draw_idle()
 
-    # ── Sliders ───────────────────────────────────────────────────────────
-    SL_H = 0.060; SL_W = 0.095; SL_GAP = 0.008
-    y_kp = 0.04; y_kd = y_kp + SL_H + 0.015
+    SL_H = 0.060; SL_W = 0.115; SL_GAP = 0.020
+    y_kd = 0.05;  y_kp = y_kd + SL_H + 0.05
     att_lbls = ['phi', 'theta', 'psi']
     pos_lbls = ['r', 't', 'z']
     att_cols = ['#FF8C00', '#FFD700', '#FF6347']
     pos_cols = ['#4169E1', '#1E90FF', '#00BFFF']
 
-    sl_data = []
+    all_sl_refs = []
+    sl_data     = []
 
     def _add_sliders(x0, Kp_arr, Kd_arr, lbls, cols, prefix):
         for ci in range(3):
@@ -1198,16 +1243,28 @@ elif PLOT_MODE == "root_locus":
                 vmax  = max(v0 * 1.5, 2.0)
                 sl    = Slider(ax_sl, lbls[ci], 0.0, vmax,
                                valinit=v0, valstep=vmax/500, color=cols[ci])
-                sl.label.set_size(8)
+                sl.label.set_fontsize(11)
+                sl.label.set_position((0.03, 0.5))
+                sl.label.set_horizontalalignment('left')
+                sl.valtext.set_fontsize(8)
+                sl.valtext.set_position((0.97, 0.5))
+                sl.valtext.set_horizontalalignment('right')
+                all_sl_refs.append(sl)
                 sl_data.append((sl, gname, ci, prefix))
 
     _add_sliders(0.06, _aKp, _aKd, att_lbls, att_cols, 'att')
     _add_sliders(0.55, _pKp, _pKd, pos_lbls, pos_cols, 'pos')
 
-    fig_rl.text(0.06 + 1*(SL_W+SL_GAP), y_kd + SL_H + 0.010,
+    for y_row, lbl in [(y_kp, 'Kp'), (y_kd, 'Kd')]:
+        fig_rl.text(0.005, y_row + SL_H/2, lbl, fontsize=12,
+                    fontweight='bold', va='center', color='dimgray')
+        fig_rl.text(0.505, y_row + SL_H/2, lbl, fontsize=12,
+                    fontweight='bold', va='center', color='dimgray')
+
+    fig_rl.text(0.06 + 1*(SL_W+SL_GAP), y_kp + SL_H + 0.010,
                 'INNER  —  att_Kp / att_Kd  (phi, theta, psi)', fontsize=9,
                 fontweight='bold', ha='center', color='dimgray')
-    fig_rl.text(0.55 + 1*(SL_W+SL_GAP), y_kd + SL_H + 0.010,
+    fig_rl.text(0.55 + 1*(SL_W+SL_GAP), y_kp + SL_H + 0.010,
                 'OUTER  —  cyl_Kp / cyl_Kd  (r, t, z)', fontsize=9,
                 fontweight='bold', ha='center', color='dimgray')
 
@@ -1231,15 +1288,16 @@ elif PLOT_MODE == "root_locus":
 
 else:  # PLOT_MODE == "sim"
     _ps        = max(1, N // 10_000)
+    def _zclip(a): return np.where(np.abs(a) < 1e-10, 0.0, a)
     t_p        = t[::_ps]
-    X_p        = X[:, ::_ps]
-    rp_p       = ref_pos_cart[:, ::_ps]
-    rv_p       = ref_vel_cart[:, ::_ps]
-    ref_yaw_p  = ref_yaw[::_ps]
-    Uv_p       = U_log_vert[:, ::_ps]
-    Uh_p       = U_log_horiz[:, ::_ps]
-    Wr_p       = Wr_log[:, ::_ps]
-    Fh_p       = Fh_log[:, ::_ps]
+    X_p        = _zclip(X[:, ::_ps])
+    rp_p       = _zclip(ref_pos_cart[:, ::_ps])
+    rv_p       = _zclip(ref_vel_cart[:, ::_ps])
+    ref_yaw_p  = _zclip(ref_yaw[::_ps])
+    Uv_p       = _zclip(U_log_vert[:, ::_ps])
+    Uh_p       = _zclip(U_log_horiz[:, ::_ps])
+    Wr_p       = _zclip(Wr_log[:, ::_ps])
+    Fh_p       = _zclip(Fh_log[:, ::_ps])
 
     if _USE_CYL_REF:
         _r_p  = np.maximum(np.sqrt(X_p[0,:]**2 + X_p[1,:]**2), 1e-6)
@@ -1261,7 +1319,6 @@ else:  # PLOT_MODE == "sim"
                 ax.axvspan(row[0], row[1], color=gc, alpha=0.5, zorder=0)
         ax.set_ylim(yl)
 
-    # ── Figure 1: Position + Attitude ────────────────────────────────────────
     fig1, axes1 = plt.subplots(3, 2, figsize=(12, 9), sharex=True)
     fig1.suptitle(f"UW Position & Attitude  [{TRAJ_MODE}]", fontsize=13)
 
@@ -1274,22 +1331,37 @@ else:  # PLOT_MODE == "sim"
         pos_actual = [X_p[0,:], X_p[1,:], X_p[2,:]]
         pos_ref    = [rp_p[0,:], rp_p[1,:], rp_p[2,:]]
 
-    att_labels = ['phi  [deg]', 'theta  [deg]', 'psi  [deg]']
+    att_labels = ['phi  [rad]', 'theta  [rad]', 'psi  [rad]']
 
     for i in range(3):
         ax = axes1[i, 0]
         if PLOT_ACTUAL:    ax.plot(t_p, pos_actual[i], 'b', lw=1.6, label='Actual')
         if PLOT_REFERENCE: ax.plot(t_p, pos_ref[i], 'r--', lw=1.2, label='Reference')
+        # Step response visual markers (custom mode only)
+        if _step_vis is not None and _step_vis[i] is not None:
+            _sv = _step_vis[i]
+            ax.axhline(_sv['final_ref'] + _sv['band'], color='limegreen',    ls=':', lw=1.0)
+            ax.axhline(_sv['final_ref'] - _sv['band'], color='limegreen',    ls=':', lw=1.0)
+            if not np.isnan(_sv['t_rise_abs']):
+                ax.axvline(_sv['t_rise_abs'],   color='darkorange',   ls=':', lw=1.2)
+            ax.axvline(_sv['t_settle_abs'],     color='mediumpurple', ls=':', lw=1.2)
         ax.set_ylabel(pos_labels[i]); ax.grid(True)
         shade_gusts(ax)
         if i == 0:
             ax.set_title("Position (cylindrical)" if _USE_CYL_REF else "Position")
-            ax.legend(loc='lower right')
+        _leg_h = []
+        if PLOT_ACTUAL:    _leg_h.append(ax.plot([], [], 'b',   lw=1.6, label='Actual')[0])
+        if PLOT_REFERENCE: _leg_h.append(ax.plot([], [], 'r--', lw=1.2, label='Reference')[0])
+        if _step_vis is not None and _step_vis[i] is not None:
+            _leg_h.append(ax.plot([], [], color='limegreen',    ls=':', lw=1.0, label=f'Settle band (±{SETTLING_THRESHOLD_PCT:.0f}%)')[0])
+            _leg_h.append(ax.plot([], [], color='darkorange',   ls=':', lw=1.2, label='Rise time (90%)')[0])
+            _leg_h.append(ax.plot([], [], color='mediumpurple', ls=':', lw=1.2, label='Settle time')[0])
+        ax.legend(handles=_leg_h, loc='lower right')
 
         ax = axes1[i, 1]
-        ax.plot(t_p, np.degrees(X_p[3+i, :]), 'b', lw=1.6, label='Actual')
+        ax.plot(t_p, X_p[3+i, :], 'b', lw=1.6, label='Actual')
         if i == 2 and PLOT_REFERENCE:
-            ax.plot(t_p, np.degrees(np.unwrap(ref_yaw_p)), 'r--', lw=1.2, label='Reference')
+            ax.plot(t_p, np.unwrap(ref_yaw_p), 'r--', lw=1.2, label='Reference')
             ax.legend(loc='lower right')
         ax.set_ylabel(att_labels[i]); ax.grid(True)
         shade_gusts(ax)
@@ -1297,9 +1369,9 @@ else:  # PLOT_MODE == "sim"
 
     axes1[2, 0].set_xlabel("Time  [s]")
     axes1[2, 1].set_xlabel("Time  [s]")
+    for ax in fig1.axes: ax.tick_params(labelbottom=True)
     fig1.tight_layout()
 
-    # ── Figure 2: Velocity tracking ──────────────────────────────────────────
     fig2, axes2 = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
     fig2.suptitle(f"UW Velocity Tracking  [{TRAJ_MODE}]", fontsize=13)
 
@@ -1321,9 +1393,9 @@ else:  # PLOT_MODE == "sim"
         if i == 0: ax.legend(loc='lower right')
 
     axes2[-1].set_xlabel("Time  [s]")
+    for ax in fig2.axes: ax.tick_params(labelbottom=True)
     fig2.tight_layout()
 
-    # ── Figure 3: Virtual control inputs ─────────────────────────────────────
     fig3, axes3 = plt.subplots(3, 2, figsize=(12, 9), sharex=True)
     fig3.suptitle("UW Virtual Control Inputs", fontsize=13)
 
@@ -1351,12 +1423,12 @@ else:  # PLOT_MODE == "sim"
 
     axes3[2, 0].set_xlabel("Time  [s]")
     axes3[2, 1].set_xlabel("Time  [s]")
+    for ax in fig3.axes: ax.tick_params(labelbottom=True)
     fig3.tight_layout()
 
-    # ── Figure 4: Vertical prop speeds (signed) ───────────────────────────────
     fig4, axes4 = plt.subplots(4, 1, figsize=(9, 10), sharex=True)
-    fig4.suptitle("UW Vertical Prop Speeds (signed: + = down thrust)", fontsize=13)
-    prop_names = ['Prop 0 (45°)', 'Prop 1 (135°)', 'Prop 2 (225°)', 'Prop 3 (315°)']
+    fig4.suptitle("UW Vertical Prop Speeds (signed: + = up thrust, eq at negative speed)", fontsize=13)
+    prop_names = ['Prop 0 FL (45°)', 'Prop 1 RL (135°)', 'Prop 2 RR (225°)', 'Prop 3 FR (315°)']
 
     for i in range(4):
         ax = axes4[i]
@@ -1371,9 +1443,9 @@ else:  # PLOT_MODE == "sim"
         shade_gusts(ax)
 
     axes4[-1].set_xlabel("Time  [s]")
+    for ax in fig4.axes: ax.tick_params(labelbottom=True)
     fig4.tight_layout()
 
-    # ── Figure 5: Open-loop pole map ──────────────────────────────────────────
     fig5, ax5 = plt.subplots(figsize=(7, 6))
     poles_uw = np.linalg.eigvals(A_lin_uw)
     ax5.scatter(poles_uw.real, poles_uw.imag, marker='x', s=80, color='teal', zorder=5)
@@ -1384,18 +1456,15 @@ else:  # PLOT_MODE == "sim"
     ax5.grid(True)
     fig5.tight_layout()
 
-    # ── Figure 6: 3D flight path ──────────────────────────────────────────────
     fig6 = plt.figure(figsize=(11, 10))
     ax6  = fig6.add_subplot(111, projection='3d')
 
-    # Draw monopile cylinder (underwater section, z negative)
     _th_s = np.linspace(0, 2*np.pi, 60)
     _z_uw = np.linspace(-H_water, 0, 40)
     _TH_uw, _Z_uw = np.meshgrid(_th_s, _z_uw)
     ax6.plot_surface(R_base*np.cos(_TH_uw), R_base*np.sin(_TH_uw), _Z_uw,
                      color='silver', alpha=0.30, edgecolor='none')
 
-    # Sea surface plane
     _xy_s = R_base * 2.5
     _xs, _ys = np.meshgrid(np.linspace(-_xy_s, _xy_s, 2),
                             np.linspace(-_xy_s, _xy_s, 2))

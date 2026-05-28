@@ -1,66 +1,49 @@
-# ==========================================
-# UAUV PRELIMINARY GEOMETRY & MASS MODEL
-# ==========================================
-# Central box + 4 arms (X-config) + 4 motor point masses.
-# All dimensions in metres, masses in kg.
-# Body frame: x forward, y left, z up.  Origin at vehicle CoM.
-#
-# FILL IN YOUR VALUES in Section A before running.
-# ==========================================
+# UAUV geometry and mass model
+# central box + 4 arms (X-config) + 4 motor point masses
+# dimensions in metres, masses in kg
+# body frame: x forward, y left, z up, origin at CoM
 
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-# ==========================================================
-# A. PARAMETERS  ← edit these
-# ==========================================================
+# --- parameters (edit these) ---
 
-# Central box (solid uniform rectangular box)
-L_box = 2   # [m] length  (x-axis)
-W_box = 1   # [m] width   (y-axis)
-H_box = 0.6   # [m] height  (z-axis)
-m_box = 22.4    # [kg]
+# central box
+L_box = 0.8   # [m] x
+W_box = 0.4   # [m] y
+H_box = 0.4   # [m] z
+m_box = 22.4  # [kg]
 
-# Arms: 4 thin rods, X-config (45° offsets), emanating from top-centre of box
-L_arm = 2   # [m] arm length (from box centre to motor)
-m_arm = 0.15   # [kg] mass of each arm (uniform rod)
+# 4 arms in X-config, 45 deg offsets from box top-centre
+L_arm = 1      # [m]
+m_arm = 0.15   # [kg] each
 
-# Motors / rotors: point mass at tip of each arm
-m_motor = 0.5  # [kg] per motor
+m_motor = 0.5  # [kg] per motor (point mass at arm tip)
 
-# Underwater arm fold fraction: fold joint at this fraction of L_arm from base.
-# After 180-degree fold, prop centre is at L_fold = f*L_arm - (1-f)*L_arm = (2f-1)*L_arm
-# Must be > 0.5 for prop to remain outside box centre. Example: f=0.75 -> L_fold=0.5*L_arm
+# underwater fold fraction: fold joint at frac*L_arm from base
+# after 180 deg fold: L_fold = (2f-1)*L_arm  (must be > 0.5)
 UW_ARM_FOLD_FRAC = 0.75
 
-# ==========================================================
-# B. DERIVED GEOMETRY
-# ==========================================================
+# --- derived geometry ---
 
-# X-config arm angles (body x=forward, y=left)
-# motor 0=FL (45°), 1=RL (135°), 2=RR (225°), 3=FR (315°)
+# arm angles: FL=45, RL=135, RR=225, FR=315
 arm_angles_deg = [45.0, 135.0, 225.0, 315.0]
 arm_angles_rad = np.radians(arm_angles_deg)
 
-# Arms attach at the top face of the box (z = +H_box/2 in box frame)
-z_attach = H_box / 2.0
+z_attach = H_box / 2.0   # arms attach at box top face
 
-# Arm CoM positions (midpoint of rod, horizontal)
 arm_com = np.array([
     [(L_arm / 2) * np.cos(a), (L_arm / 2) * np.sin(a), z_attach]
     for a in arm_angles_rad
 ])
 
-# Motor positions (tip of arm)
 motor_pos = np.array([
     [L_arm * np.cos(a), L_arm * np.sin(a), z_attach]
     for a in arm_angles_rad
 ])
 
-# ==========================================================
-# C. TOTAL MASS & CENTRE OF MASS
-# ==========================================================
+# --- total mass and CoM ---
 
 total_mass = m_box + 4 * m_arm + 4 * m_motor
 
@@ -69,26 +52,22 @@ com_y = (m_box * 0.0 + m_arm * arm_com[:, 1].sum() + m_motor * motor_pos[:, 1].s
 com_z = (m_box * 0.0 + m_arm * arm_com[:, 2].sum() + m_motor * motor_pos[:, 2].sum()) / total_mass
 CoM = np.array([com_x, com_y, com_z])
 
-# Shift all positions to CoM frame
+# shift to CoM frame
 arm_com_c   = arm_com   - CoM
 motor_pos_c = motor_pos - CoM
 box_com_c   = np.array([0.0, 0.0, 0.0]) - CoM
 
-# ==========================================================
-# D. MOMENTS OF INERTIA  (parallel axis theorem, about CoM)
-# ==========================================================
+# --- moments of inertia (parallel axis theorem, about CoM) ---
 
-# Box: solid cuboid
 Ixx_box = m_box / 12.0 * (W_box**2 + H_box**2) + m_box * (box_com_c[1]**2 + box_com_c[2]**2)
 Iyy_box = m_box / 12.0 * (L_box**2 + H_box**2) + m_box * (box_com_c[0]**2 + box_com_c[2]**2)
 Izz_box = m_box / 12.0 * (L_box**2 + W_box**2) + m_box * (box_com_c[0]**2 + box_com_c[1]**2)
 
-# Arms: uniform thin rods at angle a, elevated to z_attach
+# arms: thin rods at angle a
 Ixx_arms = Iyy_arms = Izz_arms = 0.0
 for i, a in enumerate(arm_angles_rad):
     cx, cy, cz = arm_com_c[i]
     ux, uy = np.cos(a), np.sin(a)
-    # Rod inertia about its own CoM: transverse axes only (thin rod)
     I_rod_x = m_arm * L_arm**2 / 12.0 * (uy**2)
     I_rod_y = m_arm * L_arm**2 / 12.0 * (ux**2)
     I_rod_z = m_arm * L_arm**2 / 12.0
@@ -96,7 +75,6 @@ for i, a in enumerate(arm_angles_rad):
     Iyy_arms += I_rod_y + m_arm * (cx**2 + cz**2)
     Izz_arms += I_rod_z + m_arm * (cx**2 + cy**2)
 
-# Motors: point masses
 Ixx_motors = sum(m_motor * (r[1]**2 + r[2]**2) for r in motor_pos_c)
 Iyy_motors = sum(m_motor * (r[0]**2 + r[2]**2) for r in motor_pos_c)
 Izz_motors = sum(m_motor * (r[0]**2 + r[1]**2) for r in motor_pos_c)
@@ -105,15 +83,9 @@ Ixx = Ixx_box + Ixx_arms + Ixx_motors
 Iyy = Iyy_box + Iyy_arms + Iyy_motors
 Izz = Izz_box + Izz_arms + Izz_motors
 
-# ==========================================================
-# D_UW. UNDERWATER INERTIA  (folded-arm configuration)
-# ==========================================================
-# When arms fold at UW_ARM_FOLD_FRAC, each arm splits into two segments:
-#   Seg1: box → fold joint,  length L1 = frac*L_arm,      mass m1 = m_arm*frac
-#   Seg2: fold joint → motor, length L2 = (1-frac)*L_arm,  mass m2 = m_arm*(1-frac)
-#         (Seg2 runs in opposite direction back toward centre)
-# Motor lands at L_fold = (2*frac-1)*L_arm from centre, same z as aerial.
-# Total mass and CoM are unchanged (all z positions still at H_box/2).
+# --- underwater inertia (folded-arm config) ---
+# each arm splits at UW_ARM_FOLD_FRAC into two segments running in opposite directions
+# motor ends up at L_fold = (2*frac-1)*L_arm; total mass and CoM unchanged
 
 _uw_frac = UW_ARM_FOLD_FRAC
 _uw_L1   = _uw_frac * L_arm
@@ -122,14 +94,13 @@ _uw_m1   = m_arm * _uw_frac
 _uw_m2   = m_arm * (1.0 - _uw_frac)
 UW_L_fold = (2.0 * _uw_frac - 1.0) * L_arm
 
-# UW motor positions (horizontal extent changed, z same)
 uw_motor_pos = np.array([
     [UW_L_fold * np.cos(a), UW_L_fold * np.sin(a), z_attach]
     for a in arm_angles_rad
 ])
-uw_motor_pos_c = uw_motor_pos - CoM   # CoM is unchanged
+uw_motor_pos_c = uw_motor_pos - CoM
 
-# Segment CoM positions (in absolute frame, then shift to CoM frame)
+# segment CoM positions
 uw_seg1_com = np.array([
     [(_uw_frac / 2.0) * L_arm * np.cos(a),
      (_uw_frac / 2.0) * L_arm * np.sin(a), z_attach]
@@ -143,7 +114,7 @@ uw_seg2_com = np.array([
 uw_seg1_com_c = uw_seg1_com - CoM
 uw_seg2_com_c = uw_seg2_com - CoM
 
-# Arm inertia: two segments per arm (sin²/cos² same for opposite rod direction)
+# arm inertia: two segments per arm
 Ixx_arms_uw = Iyy_arms_uw = Izz_arms_uw = 0.0
 for i, a in enumerate(arm_angles_rad):
     ux, uy = np.cos(a), np.sin(a)
@@ -158,7 +129,7 @@ for i, a in enumerate(arm_angles_rad):
         Iyy_arms_uw += I_y + m_seg * (cx**2 + cz**2)
         Izz_arms_uw += I_z + m_seg * (cx**2 + cy**2)
 
-# Motors UW: point masses at folded positions
+# motor inertia at folded positions
 Ixx_motors_uw = sum(m_motor * (r[1]**2 + r[2]**2) for r in uw_motor_pos_c)
 Iyy_motors_uw = sum(m_motor * (r[0]**2 + r[2]**2) for r in uw_motor_pos_c)
 Izz_motors_uw = sum(m_motor * (r[0]**2 + r[1]**2) for r in uw_motor_pos_c)
@@ -167,9 +138,7 @@ Ixx_uw = Ixx_box + Ixx_arms_uw + Ixx_motors_uw
 Iyy_uw = Iyy_box + Iyy_arms_uw + Iyy_motors_uw
 Izz_uw = Izz_box + Izz_arms_uw + Izz_motors_uw
 
-# ==========================================================
-# E. PRINT RESULTS  &  F. 3D VISUALISATION  (only when run directly)
-# ==========================================================
+# run directly for printed results and 3D visualisation
 if __name__ == "__main__":
     print("=" * 50)
     print("UAUV PRELIMINARY MASS PROPERTIES")
@@ -218,7 +187,7 @@ if __name__ == "__main__":
              color='steelblue', alpha=0.45)
 
     motor_labels = ['FL', 'RL', 'RR', 'FR']
-    spin_color   = ['tomato', 'royalblue', 'tomato', 'royalblue']  # red=CCW, blue=CW — diagonal pairs
+    spin_color   = ['tomato', 'royalblue', 'tomato', 'royalblue']  # red=CCW, blue=CW
     prop_r       = L_arm * 0.12   # propeller disk radius
 
     _ang = np.linspace(0, 2 * np.pi, 40)
@@ -267,7 +236,7 @@ if __name__ == "__main__":
 
     plt.tight_layout()
 
-    # ── Figure 2: Underwater (folded-arm) configuration ───────────────────────
+    # fig 2: underwater (folded-arm) config
     fig2 = plt.figure(figsize=(9, 8))
     ax2  = fig2.add_subplot(111, projection='3d')
     ax2.set_title("UAUV Underwater Geometry  (arms folded)", fontsize=13, fontweight='bold')
@@ -277,7 +246,7 @@ if __name__ == "__main__":
                f"Ixx_uw : {Ixx_uw:.4f} kg·m²\n"
                f"Iyy_uw : {Iyy_uw:.4f} kg·m²\n"
                f"Izz_uw : {Izz_uw:.4f} kg·m²")
-    fig2.text(0.02, 0.97, info_uw, fontsize=9, va='top', family='monospace',
+    fig2.text(0.02, 0.02, info_uw, fontsize=9, va='bottom', family='monospace',
               bbox=dict(boxstyle='round', facecolor='lightcyan', alpha=0.8))
 
     # Same box
@@ -294,10 +263,10 @@ if __name__ == "__main__":
         start = np.array([0.0, 0.0, z_attach]) - CoM
         motor = uw_motor_pos_c[i]
 
-        # Segment 1: box centre → fold joint
+        # seg 1: box centre to fold joint
         ax2.plot([start[0], fold[0]], [start[1], fold[1]], [start[2], fold[2]],
                  'k-', lw=3)
-        # Segment 2: fold joint → motor (lighter line, folded-back portion)
+        # seg 2: fold joint to motor (folded-back)
         ax2.plot([fold[0], motor[0]], [fold[1], motor[1]], [fold[2], motor[2]],
                  color='gray', lw=2, ls='--')
         # Fold joint marker
@@ -313,10 +282,36 @@ if __name__ == "__main__":
                                  edgecolor='k', linewidth=0.8)
         ax2.add_collection3d(disk2)
 
-        ax2.text(motor[0]*1.18, motor[1]*1.18, motor[2],
-                 motor_labels[i], fontsize=9, ha='center')
+        # Label: offset radially beyond disk edge so it never overlaps the prop
+        _mag = np.sqrt(motor[0]**2 + motor[1]**2)
+        _ux, _uy = (motor[0] / _mag, motor[1] / _mag) if _mag > 1e-6 else (1.0, 0.0)
+        _loff = prop_r_uw * 2.2   # radial clearance past disk edge
+        ax2.text(motor[0] + _ux * _loff, motor[1] + _uy * _loff, motor[2] + prop_r_uw * 0.8,
+                 motor_labels[i], fontsize=9, ha='center', fontweight='bold')
 
     ax2.scatter(0, 0, 0, s=200, color='gold', marker='*', zorder=10, label='CoM')
+
+    # horizontal thrusters at box corners
+    _alpha_h = np.radians(45.0)   # thrust angle from wall toward interior
+    _px = L_box / 2.0 - CoM[0]   # corner x in CoM frame (CoM[0]=0 by symmetry)
+    _py = W_box / 2.0 - CoM[1]   # corner y in CoM frame (CoM[1]=0 by symmetry)
+    _cz = -CoM[2]                  # corner z in CoM frame (box centre at -CoM[2])
+    _arr = L_box * 0.18            # arrow length
+    _horiz_corners = [
+        ( _px, -_py, _cz, +np.cos(_alpha_h), +np.sin(_alpha_h), 'FR'),
+        ( _px,  _py, _cz, +np.cos(_alpha_h), -np.sin(_alpha_h), 'FL'),
+        (-_px,  _py, _cz, -np.cos(_alpha_h), -np.sin(_alpha_h), 'RL'),
+        (-_px, -_py, _cz, -np.cos(_alpha_h), +np.sin(_alpha_h), 'RR'),
+    ]
+    for hx, hy, hz, dx, dy, lbl in _horiz_corners:
+        # Marker at corner
+        ax2.scatter(hx, hy, hz, s=60, color='darkorange', edgecolors='k',
+                    linewidth=0.8, zorder=7)
+        # Arrow showing thrust direction
+        ax2.quiver(hx, hy, hz, dx*_arr, dy*_arr, 0,
+                   color='darkorange', arrow_length_ratio=0.35, linewidth=1.5)
+        ax2.text(hx + dx*_arr*1.3, hy + dy*_arr*1.3, hz,
+                 lbl, fontsize=7, ha='center', color='darkorange', fontweight='bold')
 
     axis_len2 = UW_L_fold * 0.6
     ax2.quiver(0, 0, 0, axis_len2, 0, 0, color='r', arrow_length_ratio=0.2)
@@ -326,7 +321,7 @@ if __name__ == "__main__":
     ax2.text(0, axis_len2*1.15, 0, 'y', color='g', fontsize=10)
     ax2.text(0, 0, axis_len2*1.15, 'z', color='b', fontsize=10)
 
-    span2 = max(L_box, W_box) * 0.9
+    span2 = max(L_box, W_box) * 0.7 + _arr * 1.5
     ax2.set_xlim(-span2, span2)
     ax2.set_ylim(-span2, span2)
     ax2.set_zlim(-span2, span2)
@@ -341,7 +336,8 @@ if __name__ == "__main__":
         mpatches.Patch(facecolor='royalblue', edgecolor='k', label='CW rotor'),
         plt.Line2D([0],[0], color='k',    lw=3,          label='Arm seg 1'),
         plt.Line2D([0],[0], color='gray', lw=2, ls='--', label='Arm seg 2 (folded)'),
-    ], labels=['CoM', 'CCW rotor', 'CW rotor', 'Arm seg 1', 'Arm seg 2 (folded)'])
+        plt.Line2D([0],[0], color='darkorange', lw=2,      label='Horiz thruster'),
+    ], labels=['CoM', 'CCW rotor', 'CW rotor', 'Arm seg 1', 'Arm seg 2 (folded)', 'Horiz thruster'])
 
     fig2.tight_layout()
     plt.show()

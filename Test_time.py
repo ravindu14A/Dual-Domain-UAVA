@@ -1,11 +1,9 @@
-# ==========================================
-# DRONE INSPECTION ROUTING - MAIN INTERFACE
-# ==========================================
+# drone inspection routing - main interface
 import math
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Import the core math functions from the separate file
+# core math from the functions file
 from Test_time_functions import (
     get_distance_lawnmower,
     get_distance_spiral,
@@ -23,77 +21,68 @@ from Test_time_functions import (
     plot_inspection_route
 )
 
-# ==========================================================
-# A. TOWER & TURBINE GEOMETRY CONFIGURATION
-# ==========================================================
-R_base = 4        # Monopile radius (constant from seafloor to tower top base)
-R_top  = 2.85     # Nacelle interface radius at the top of the cone
+# --- Tower & turbine geometry ---
+R_base = 4        # monopile radius
+R_top  = 2.85     # nacelle interface radius at cone top
 
-H_water    = 60   # Underwater portion of the monopile
-H_air_cyl  = 30   # Above-water cylindrical section (before cone starts)
-H_air_cone = 135  # Height of the tapered tower cone
+H_water    = 60   # underwater section
+H_air_cyl  = 30   # above-water cylinder (before cone)
+H_air_cone = 135  # tapered cone height
 
-# Turbine (modelled as 3 equivalent cylinders)
-R_blade = 3.5     # Abstract radius of blade cylinder
-H_blade = 110     # Length of each blade
+# turbine blades modelled as 3 cylinders
+R_blade = 3.5
+H_blade = 110
 
-# ==========================================================
-# B. CAMERA CONFIGURATIONS
-# ==========================================================
-# h_fov, v_fov: full-angle field of view in degrees
-# D: standoff distance from structure surface (m)
+# --- Camera configs ---
+# h_fov, v_fov: full-angle FOV in degrees; D: standoff from surface (m)
 
 rgb_camera = {
-    "gsd": 0.002, "max_blur": 2.0, "shutter": 0.001,
-    "h_fov": 63.0, "v_fov": 46.0, "D": 2.0,
-    "h_overlap": 0.75, "v_overlap": 0.75, "fps": 10,
+    "gsd": 0.003, "max_blur": 2.0, "shutter": 1/(2*90),
+    "h_fov": 106.62, "v_fov": 71.08, "D":2 ,
+    "h_overlap": 0.1, "v_overlap": 0.1, "fps": 90,
 }
 event_camera = {
-    "h_fov": 60.0, "v_fov": 45.0, "D":2.0,
+    "h_fov": 60.0, "v_fov": 45.0, "D": 2.0,
     "h_overlap": 0.2, "v_overlap": 0.2,
 }
 hyperspectral_camera = {
     "gsd": 0.004, "max_blur": 2.0, "h_fov": 38.0,
-    "D": 2.0, "line_rate": 330, "integration": 0.003, "h_overlap": 0.2,
+    "D": 3.0, "line_rate": 330, "aintegration": 0.003, "h_overlap": 0.2,
 }  # [Specimen AFX10]
 
 cameras = {"RGB": rgb_camera, "EVENT": event_camera, "HYPERSPECTRAL": hyperspectral_camera}
 
-# ==========================================================
-# C. PHASE CONFIGURATIONS
-# ==========================================================
+# --- Phase configs ---
 
-# WATER PROFILE
+# water
 water_config = {
     "camera_type": "RGB",
     "flight_mode": "lawnmower",
-    "v_max":   5,    # [m/s] max vertical scan speed (camera limits may reduce further)
-    "v_horiz": 0.2,    # [m/s] horizontal step speed between strips (no camera constraint)
+    "v_max":   1.5,    # [m/s] max scan speed (camera may limit this further)
+    "v_horiz": 0.2,    # [m/s] horizontal step speed
 }
 
-# AIR PROFILE  ← quadcopterSC.py imports this
+# air (imported by quadcopterSC.py)
 air_config = {
     "camera_type": "RGB",
     "flight_mode": "lawnmower",
-    "v_max":   5,    # [m/s] max vertical scan speed (camera limits may reduce further)
-    "v_horiz": 0.2,    # [m/s] horizontal step speed between strips (no camera constraint)
+    "v_max":   5,
+    "v_horiz": 0.2,
 }
 
-# TURBINE PROFILE
+# turbine
 turbine_config = {
     "camera_type": "RGB",
     "flight_mode": "lawnmower",
-    "v_max":   5,    # [m/s] max vertical scan speed (camera limits may reduce further)
-    "v_horiz": 0.2,    # [m/s] horizontal step speed between strips (no camera constraint)
+    "v_max":   5,
+    "v_horiz": 0.2,
 }
 
 transition_penalty_seconds = 45.0
 
-# ---  MAIN EXECUTION LOGIC ---
 if __name__ == "__main__":
-    # DONT CHANGE CODE AFTER THIS POINT
     # ---------------------------------------------------------
-    # D. EXECUTE PHASE 1: UNDERWATER
+    # phase 1: underwater
     # ---------------------------------------------------------
     t_water = 0.0
     cw = cameras[water_config["camera_type"]]
@@ -130,7 +119,7 @@ if __name__ == "__main__":
         water_dist_str = f"path={dist_w:.1f}m, pitch={pitch_w:.3f}m"
 
     # ---------------------------------------------------------
-    # E. EXECUTE PHASE 2: AIR
+    # phase 2: air
     # ---------------------------------------------------------
     t_air = 0.0
     ca = cameras[air_config["camera_type"]]
@@ -173,7 +162,7 @@ if __name__ == "__main__":
         air_dist_str = f"path={total_dist_air:.1f}m, pitch={pitch_a:.3f}m"
 
     # ---------------------------------------------------------
-    # G. EXECUTE PHASE 3: TURBINE (3 Independent Blades)
+    # phase 3: turbine (3 blades)
     # ---------------------------------------------------------
     t_turbine = 0.0
     ct = cameras[turbine_config["camera_type"]]
@@ -210,7 +199,7 @@ if __name__ == "__main__":
         turbine_dist_str = f"path={3*dist_t:.1f}m, pitch={pitch_t:.3f}m (3 blades)"
 
     # ---------------------------------------------------------
-    # H. FINAL OUTPUT
+    # results
     # ---------------------------------------------------------
     total_inspection_time = t_water + transition_penalty_seconds + t_air + t_turbine
     
@@ -236,7 +225,7 @@ if __name__ == "__main__":
     print(f"{'TOTAL ESTIMATED TIME:':<{col1}}{total_inspection_time / 60:.2f} min")
     
     # ---------------------------------------------------------
-    # G. VISUALIZE FLIGHT PATH
+    # visualise flight path
     # ---------------------------------------------------------
     print("\nGenerating 3D interactive plot...")
     plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config, cameras)

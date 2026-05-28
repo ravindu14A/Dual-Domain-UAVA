@@ -1,15 +1,11 @@
-# ==========================================
-# DRONE INSPECTION ROUTING - MAIN INTERFACE
-# ==========================================
+# drone inspection routing - helper functions
 import math
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-# --- 1. CORE GEOMETRY & VELOCITY MODULE (The "Dumb" Calculators) ---
-
 def get_distance_lawnmower(R_base, R_top, H, w_arc):
-    """Calculates vertical and horizontal distances for a lawnmower path."""
+    """Vertical and horizontal distances for a lawnmower path."""
     if R_base == R_top:
         S = H
     else:
@@ -22,7 +18,7 @@ def get_distance_lawnmower(R_base, R_top, H, w_arc):
     return {"vertical": vert_dist, "horizontal": horiz_dist}
 
 def get_distance_spiral(R_base, R_top, H, v_frame):
-    """Calculates the continuous path distance for a spiral path."""
+    """Continuous path distance for a spiral."""
     if R_base == R_top:
         return (H / v_frame) * math.sqrt((2 * math.pi * R_base)**2 + v_frame**2)
 
@@ -31,22 +27,22 @@ def get_distance_spiral(R_base, R_top, H, v_frame):
     return (A_lat / v_frame) + ((v_frame * S) / (4 * math.pi * (R_base - R_top))) * math.log(R_base / R_top)
 
 def get_h_frame(D, h_fov_deg):
-    """Horizontal footprint of the camera frame on a flat surface."""
+    """Horizontal footprint on a flat surface."""
     return 2 * D * math.tan(math.radians(h_fov_deg) / 2)
 
 def get_v_frame(D, v_fov_deg):
-    """Vertical footprint of the camera frame on a flat surface."""
+    """Vertical footprint on a flat surface."""
     return 2 * D * math.tan(math.radians(v_fov_deg) / 2)
 
 def get_required_pixels(D, h_fov_deg, v_fov_deg, gsd):
-    """Returns required sensor resolution (width x height) in pixels."""
+    """Required sensor resolution (width x height) in pixels."""
     n_h = int(get_h_frame(D, h_fov_deg) / gsd)
     n_v = int(get_v_frame(D, v_fov_deg) / gsd)
     return n_h, n_v
 
 def get_w_arc(R, D, h_fov_deg, label="structure"):
-    """Calculates the true curved arc footprint of a camera on a cylinder.
-    Safely handles cases where the camera's FOV is wider than the cylinder."""
+    """True curved arc footprint of camera on a cylinder.
+    Handles FOV wider than the cylinder gracefully."""
     alpha = math.radians(h_fov_deg)
     domain_check = ((R + D) / R) * math.sin(alpha / 2)
 
@@ -95,44 +91,34 @@ def get_velocity_hyper_lawnmower(v_kin, gsd_v, line_rate, integration_time, max_
     return candidates[reason], reason
 
 
-# --- 2. SIMPLIFIED TIME FUNCTIONS ---
-
 def time_lawnmower(d_vert, d_horiz, v_vert, v_horiz):
-    """Calculates time for a lawnmower path based purely on distances and speeds."""
+    """Total time for a lawnmower path."""
     return (d_vert / v_vert) + (d_horiz / v_horiz)
 
 def time_spiral(d_total, v_path):
-    """Calculates time for a spiral path based purely on distance and speed."""
+    """Total time for a spiral path."""
     return d_total / v_path
 
 
-# --- 3. PATH COORDINATE GENERATORS ---
-
 def get_lawnmower_coords(z_start, z_end, R_max, w_arc, theta_start=0.0):
-    """
-    Generate (z, theta) sample points for a lawnmower inspection path.
-    Returns two lists: z_coords, theta_coords.
-    """
+    """Generate (z, theta) sample points for a lawnmower path.
+    Returns z_coords, theta_coords as lists."""
     z_coords, theta_coords = [], []
     num_strips = int(np.ceil((2 * np.pi * R_max) / w_arc))
     d_theta = (2 * np.pi) / num_strips
     current_theta = theta_start
 
     for _ in range(num_strips):
-        # Fly Up
-        z_coords.extend(np.linspace(z_start, z_end, 30))
+        z_coords.extend(np.linspace(z_start, z_end, 30))  # up
         theta_coords.extend([current_theta] * 30)
         next_theta = current_theta + d_theta
-        # Translate Across Top
-        z_coords.extend([z_end] * 30)
+        z_coords.extend([z_end] * 30)                     # across top
         theta_coords.extend(np.linspace(current_theta, next_theta, 30))
         current_theta = next_theta
-        # Fly Down
-        z_coords.extend(np.linspace(z_end, z_start, 30))
+        z_coords.extend(np.linspace(z_end, z_start, 30))  # down
         theta_coords.extend([current_theta] * 30)
-        # Translate Across Bottom
         next_theta = current_theta + d_theta
-        z_coords.extend([z_start] * 30)
+        z_coords.extend([z_start] * 30)                    # across bottom
         theta_coords.extend(np.linspace(current_theta, next_theta, 30))
         current_theta = next_theta
 
@@ -140,10 +126,8 @@ def get_lawnmower_coords(z_start, z_end, R_max, w_arc, theta_start=0.0):
 
 
 def get_spiral_coords(z_start, z_end, w_flat, theta_start=0.0):
-    """
-    Generate (z, theta) sample points for a spiral inspection path.
-    Returns two lists: z_coords, theta_coords.
-    """
+    """Generate (z, theta) sample points for a spiral path.
+    Returns z_coords, theta_coords as lists."""
     num_revs = (z_end - z_start) / w_flat
     n_points = max(int(num_revs * 100), 50)
     z_coords = np.linspace(z_start, z_end, n_points)
@@ -151,10 +135,8 @@ def get_spiral_coords(z_start, z_end, w_flat, theta_start=0.0):
     return z_coords.tolist(), theta_coords.tolist()
 
 
-# --- 4. 3D VISUALIZATION MODULE ---
-
 def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config, cameras):
-    """Generates an interactive 3D matplotlib visualization of the dual-environment flight paths."""
+    """3D matplotlib plot of the dual-environment flight paths."""
     H_total = H_water + H_air_cyl + H_air_cone
 
     cw = cameras[water_config["camera_type"]]
@@ -176,7 +158,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
             return R_base - ((R_base - R_top) / H_air_cone) * (z - (H_water + H_air_cyl))
 
     def transform_coords(x, y, z, angle_deg, z_offset):
-        """Rotates coordinates around the Y-axis to orient the blades, then translates to the tower top."""
+        """Rotate around Y-axis then translate to tower top."""
         rad = np.radians(angle_deg)
         x_rot = x * np.cos(rad) + z * np.sin(rad)
         y_rot = y
@@ -186,29 +168,26 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
 
-    # 1. Plot Tower Surface — cylinder and truncated cone as separate surfaces
+    # tower surface: cylinder + cone
     theta_surf = np.linspace(0, 2 * np.pi, 60)
-    # Monopile cylinder: seafloor to top of cylindrical section
     _THc, _Zc = np.meshgrid(theta_surf, np.linspace(0, H_water + H_air_cyl, 30))
     ax.plot_surface(R_base * np.cos(_THc), R_base * np.sin(_THc), _Zc,
                     color='silver', alpha=0.3, edgecolor='none')
-    # Tapered tower cone: cylindrical section top to tower top
     _THt, _Zt = np.meshgrid(theta_surf, np.linspace(H_water + H_air_cyl, H_total, 50))
     _Rt = R_base + (R_top - R_base) * (_Zt - (H_water + H_air_cyl)) / H_air_cone
     ax.plot_surface(_Rt * np.cos(_THt), _Rt * np.sin(_THt), _Zt,
                     color='silver', alpha=0.3, edgecolor='none')
 
-    # 2. Plot Sea Level Plane
+    # sea level and monopile end planes
     x_sea, y_sea = np.meshgrid(np.linspace(-R_base*2, R_base*2, 2), np.linspace(-R_base*2, R_base*2, 2))
     z_sea = np.full(x_sea.shape, H_water)
     ax.plot_surface(x_sea, y_sea, z_sea, color='dodgerblue', alpha=0.2)
 
-    # 2b. Plot Monopile End Plane (top of cylindrical section, where cone begins)
     x_mp, y_mp = np.meshgrid(np.linspace(-R_base*2, R_base*2, 2), np.linspace(-R_base*2, R_base*2, 2))
     z_mp = np.full(x_mp.shape, H_water + H_air_cyl)
     ax.plot_surface(x_mp, y_mp, z_mp, color='red', alpha=0.2)
 
-    # 3. Generate & Plot Water Path
+    # water path
     if water_config["flight_mode"] == "lawnmower":
         zw, tw = get_lawnmower_coords(0, H_water, R_base, w_arc_w * (1 - cw["h_overlap"]))
     else:
@@ -218,7 +197,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
 
     theta_at_waterline = tw[-1]
 
-    # 4. Generate & Plot Air Path
+    # air path
     if air_config["flight_mode"] == "lawnmower":
         za, ta = get_lawnmower_coords(H_water, H_total, R_base, w_arc_a * (1 - ca["h_overlap"]), theta_start=theta_at_waterline)
     else:
@@ -226,7 +205,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     ra = np.array([get_radius(z) + ca["D"] for z in za])
     ax.plot(ra*np.cos(ta), ra*np.sin(ta), za, color='red', linewidth=1.5, label=f'Air Phase ({air_config["flight_mode"]})')
 
-    # 5. Generate & Plot Turbine (3 Blades) Path & Surfaces
+    # turbine path and surfaces (3 blades)
     if turbine_config["flight_mode"] == "lawnmower":
         zb_list, tb_list = get_lawnmower_coords(0, H_blade, R_blade, w_arc_t * (1 - ct["h_overlap"]))
     else:
@@ -236,7 +215,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     yb_arr = R_blade * np.sin(tb_list)
     zb_arr = np.array(zb_list)
     
-    # Create surface meshes for the blades
+    # blade surface meshes
     z_b = np.linspace(0, H_blade, 20)
     theta_b = np.linspace(0, 2 * np.pi, 20)
     tb_grid, zb_grid = np.meshgrid(theta_b, z_b)
@@ -244,36 +223,24 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     yb_grid = R_blade * np.sin(tb_grid)
     
     for idx, angle in enumerate([0, 120, 240]):
-        # Plot Blade Surface
         x_surf, y_surf, z_surf = transform_coords(xb_grid, yb_grid, zb_grid, angle, H_total)
         ax.plot_surface(x_surf, y_surf, z_surf, color='gold', alpha=0.3, edgecolor='none')
-        
-        # Plot Blade Flight Path
         x_path, y_path, z_path = transform_coords(xb_arr, yb_arr, zb_arr, angle, H_total)
-        # Add label only once to keep legend clean
-        lbl = f'Turbine Phase ({turbine_config["flight_mode"]})' if idx == 0 else ""
+        lbl = f'Turbine Phase ({turbine_config["flight_mode"]})' if idx == 0 else ""  # label once
         ax.plot(x_path, y_path, z_path, color='orange', linewidth=1.5, label=lbl)
 
-    # ---------------------------------------------------------
-    # TRUE 1:1 PHYSICAL ASPECT RATIO FIX
-    # ---------------------------------------------------------
     ax.set_title("Full Wind Turbine Inspection Path", fontsize=14, fontweight='bold')
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Altitude Z (m)")
     
-    # Calculate the maximum required span to fit the whole structure
     max_dim = max(R_base * 4, H_total + H_blade)
-    
-    # Set all axes to have the exact same total span
     ax.set_xlim([-max_dim / 2, max_dim / 2])
     ax.set_ylim([-max_dim / 2, max_dim / 2])
     ax.set_zlim([0, max_dim])
-    
-    # Force the drawing box itself to be a perfect cube
     ax.set_box_aspect([1, 1, 1])
-    
-    # Create cleaner legend
+
+    # legend
     handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
     by_label['Waterline'] = mpatches.Patch(color='dodgerblue', alpha=0.4)
