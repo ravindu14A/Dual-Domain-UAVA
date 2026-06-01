@@ -29,7 +29,7 @@ try:
     from tqdm import tqdm
 except ImportError:
     tqdm = None
-from Test_time import air_config, cameras, R_base, R_top, H_air_cyl, H_air_cone
+from Test_time import air_config, cameras, R_base, R_top, H_air_cyl, H_air_cone, _aerial_timed_waypoints
 from geometry import total_mass as _geo_mass, Ixx as _geo_Ixx, Iyy as _geo_Iyy, Izz as _geo_Izz, L_arm as _geo_Larm, L_box as _geo_Lbox, W_box as _geo_Wbox, H_box as _geo_Hbox
 
 # trajectory helpers -- shared by custom and test_time_air modes
@@ -466,9 +466,24 @@ _gains = {
         att_Kd    = np.array([18.39, 45.6,   20.71]),
         att_i_lim = np.array([10.0,  10.0,   5.0  ]),
         att_lim   = 0.45,
-        cyl_Kp    = np.array([0.088, 0.108,  0.328]),
-        cyl_Ki    = np.array([0.02,  0.02,   0.05 ]),
-        cyl_Kd    = np.array([1.272, 1.076,  1.124]),
+        cyl_Kp    = np.array([0.15,  0.20,   2.00 ]),
+        cyl_Ki    = np.array([0.02,  0.02,   0.15 ]),
+        cyl_Kd    = np.array([1.272, 1.076,  2.50 ]),
+        cyl_i_lim = np.array([5.0,   5.0,   10.0  ]),
+    ),
+    # Derivative-on-measurement gains for event-triggered waypoint mode.
+    # Kp_z boosted to compensate for removed velocity feedforward (old D term
+    # was implicitly adding Kd*ref_vel as upward thrust).
+    # Kd sized for critical damping: Kd ≈ 2*sqrt(Kp) per axis.
+    "lawnmower_event": dict(
+        att_Kp    = np.array([61.4,  198.1,  39.14]),
+        att_Ki    = np.array([0.3,   0.3,    0.1  ]),
+        att_Kd    = np.array([18.39, 45.6,   20.71]),
+        att_i_lim = np.array([10.0,  10.0,   5.0  ]),
+        att_lim   = 0.45,
+        cyl_Kp    = np.array([0.25,  0.30,   1.0  ]),
+        cyl_Ki    = np.array([0.02,  0.02,   0.10 ]),
+        cyl_Kd    = np.array([1.0,   1.1,    2.0  ]),
         cyl_i_lim = np.array([5.0,   5.0,   10.0  ]),
     ),
 }
@@ -546,161 +561,11 @@ def build_custom_traj(segments, t_arr):
     return ref_p, ref_v
 
 
-def _aerial_timed_waypoints():
-    """
-    Build time-stamped waypoints for the aerial phase, using the same path
-    geometry and camera params as Test_time.py.
-
-    z=0 at sea level (H_water subtracted) to match the sim world frame.
-
-    Returns ndarray (M, 7): [t, r, theta, z, vr, vtheta, vz]
-    """
-    from Test_time_functions import (
-        get_w_arc, get_v_frame,
-        get_velocity_rgb_lawnmower, get_velocity_rgb_spiral,
-        get_velocity_event, get_velocity_event_spiral,
-        get_velocity_hyper_lawnmower,
-        get_lawnmower_coords, get_spiral_coords,
-    )
-    from Test_time import (
-        R_base, R_top, H_water, H_air_cyl, H_air_cone,
-        air_config, cameras,
-    )
-
-    H_total = H_water + H_air_cyl + H_air_cone
-
-    ca    = cameras[air_config["camera_type"]]
-    D     = ca["D"]
-    fmode = air_config["flight_mode"]
-    v_max = float(air_config["v_max"])
-
-    v_frame_a = get_v_frame(D, ca["v_fov"]) if "v_fov" in ca else None
-    w_arc_a   = get_w_arc(R_base, D, ca["h_fov"], label="tower")
-
-    def get_radius(z):
-        if z <= H_water + H_air_cyl:
-            return R_base
-        return R_base - ((R_base - R_top) / H_air_cone) * (z - (H_water + H_air_cyl))
-
-    # compute velocities for the air phase
-    if fmode == "lawnmower":
-        if air_config["camera_type"] == "RGB":
-            v_scan, _ = get_velocity_rgb_lawnmower(
-                v_max, ca["gsd"], ca["max_blur"], ca["shutter"],
-                v_frame_a, ca["v_overlap"], ca["fps"])
-        elif air_config["camera_type"] == "EVENT":
-            v_scan, _ = get_velocity_event(v_max)
-        elif air_config["camera_type"] == "HYPERSPECTRAL":
-            v_scan, _ = get_velocity_hyper_lawnmower(
-                v_max, ca["gsd"], ca["line_rate"], ca["integration"], ca["max_blur"])
-        else:
-            v_scan = v_max
-
-        v_vert  = v_scan                              # speed along vertical strips
-        v_horiz = float(air_config.get("v_horiz", v_max))  # horizontal step speed
-
-        w_arc_step = w_arc_a * (1.0 - ca["h_overlap"])
-        za, ta = get_lawnmower_coords(H_water, H_total, R_base, w_arc_step)
-
-    elif fmode == "spiral":
-        pitch = v_frame_a * (1.0 - ca["v_overlap"]) if v_frame_a \
-                else w_arc_a * (1 - ca["h_overlap"])
-        if air_config["camera_type"] == "RGB":
-            v_path, _ = get_velocity_rgb_spiral(
-                v_max, R_base, pitch, w_arc_a,
-                ca["gsd"], ca["max_blur"], ca["shutter"], ca["h_overlap"], ca["fps"])
-        elif air_config["camera_type"] == "EVENT":
-            v_path, _ = get_velocity_event_spiral(v_max)
-        else:
-            v_path = v_max
-
-        v_vert  = v_path
-        v_horiz = v_path
-
-        za, ta = get_spiral_coords(H_water, H_total, pitch)
-
-    else:
-        raise ValueError(f"Unknown flight_mode: '{fmode}'")
-
-    # build cylindrical path (r, theta, z) directly
-    za = np.array(za)
-    ta = np.array(ta)
-    ra = np.array([get_radius(z) for z in za]) + D   # standoff radius
-    z_norm = za - H_water                             # z=0 at sea level
-
-    # trapezoidal speed profiling - magnitude along path arc
-    # individual cylindrical components (vr, vtheta, vz) are projections of the same profile
-    xyz_tmp = np.column_stack([ra * np.cos(ta), ra * np.sin(ta), z_norm])
-    N_pts   = len(za)
-    dists   = np.array([np.linalg.norm(xyz_tmp[i+1] - xyz_tmp[i])
-                        for i in range(N_pts - 1)])
-
-    # Classify each non-zero gap: 0 = vertical strip, 1 = horizontal turn
-    gap_type = np.full(N_pts - 1, -1, dtype=int)
-    for i in range(N_pts - 1):
-        if dists[i] > 1e-10:
-            vf = abs(xyz_tmp[i+1, 2] - xyz_tmp[i, 2]) / dists[i]
-            gap_type[i] = 0 if vf > 0.7 else 1
-
-    # Apply trap_speeds to each contiguous segment of the same type
-    speed_arr = np.zeros(N_pts)
-    i = 0
-    while i < N_pts - 1:
-        while i < N_pts - 1 and gap_type[i] == -1:   # skip zero-length junctions
-            i += 1
-        if i >= N_pts - 1:
-            break
-        seg_t = gap_type[i]
-        v_cru = v_vert if seg_t == 0 else v_horiz
-        j = i
-        while j < N_pts - 1 and gap_type[j] == seg_t:
-            j += 1
-        # Segment covers waypoints i..j; trap_speeds profiles speed magnitude
-        s_arr = arc_lengths(xyz_tmp[i:j+1])
-        speeds, _ = trap_speeds(s_arr, v_cru, TRAJ_ACCEL_MAX)
-        speed_arr[i:j+1] = speeds
-        i = j
-
-    # Velocity vectors: direction from path tangent × speed magnitude
-    vr_arr = np.zeros(N_pts)
-    vθ_arr = np.zeros(N_pts)
-    vz_arr = np.zeros(N_pts)
-    for i in range(N_pts - 1):
-        if dists[i] < 1e-10:
-            continue
-        dv   = xyz_tmp[i+1] - xyz_tmp[i]
-        vx_i = (dv[0] / dists[i]) * speed_arr[i]
-        vy_i = (dv[1] / dists[i]) * speed_arr[i]
-        vz_i = (dv[2] / dists[i]) * speed_arr[i]
-        r_i  = max(ra[i], 1e-6)
-        θ_i  = ta[i]
-        vr_arr[i]  =  vx_i * np.cos(θ_i) + vy_i * np.sin(θ_i)
-        vθ_arr[i]  = (-vx_i * np.sin(θ_i) + vy_i * np.cos(θ_i)) / r_i
-        vz_arr[i]  = vz_i
-
-    vr_arr[-1] = vr_arr[-2]
-    vθ_arr[-1] = vθ_arr[-2]
-    vz_arr[-1] = vz_arr[-2]
-
-    # timestamps via trapezoidal integration
-    times = [0.0]
-    for i in range(1, N_pts):
-        d = dists[i-1]
-        if d < 1e-10:
-            times.append(times[-1])
-            continue
-        v_avg = max((speed_arr[i-1] + speed_arr[i]) / 2, 1e-6)
-        times.append(times[-1] + d / v_avg)
-
-    times = np.array(times)
-    return np.column_stack([times, ra, ta, z_norm, vr_arr, vθ_arr, vz_arr])
-
-
 def build_test_time_aerial_traj(t_arr):
     """Interpolate aerial path onto the sim time array.
     Returns ref_pos (3,N), ref_vel (3,N), duration (s), start_xyz (3,).
     """
-    wp = _aerial_timed_waypoints()   # (M, 7): [t, r, θ, z, ṙ, θ̇, ż]
+    wp, _, _ = _aerial_timed_waypoints()   # (M, 7): [t, r, θ, z, ṙ, θ̇, ż]
     ref_p = np.zeros((3, len(t_arr)))
     ref_v = np.zeros((3, len(t_arr)))
     for ax in range(3):
@@ -763,7 +628,7 @@ if DIST_ENABLED and DISTURBANCES:
 if TRAJ_MODE == "custom" and len(TRAJ_SEGMENTS):
     _t_events.append(TRAJ_SEGMENTS[-1][0])
 elif TRAJ_MODE == "test_time_air":
-    _wp = _aerial_timed_waypoints()
+    _wp, _, _ = _aerial_timed_waypoints()
     _t_events.append(float(_wp[-1, 0]))
 
 t_end = max(_t_events) + T_BUFFER
@@ -925,8 +790,9 @@ X[5, 0] = ref_yaw[0]           # initialise yaw to match reference — avoids 18
 int_att = np.zeros(3)
 int_pos = np.zeros(3)
 
-U_log  = np.zeros((4, N))   # [T, τ_φ, τ_θ, τ_ψ]
-Wr_log = np.zeros((4, N))   # commanded rotor speeds
+U_log    = np.zeros((4, N))   # [T, τ_φ, τ_θ, τ_ψ]
+Wr_log   = np.zeros((4, N))   # commanded rotor speeds
+Ref_log  = np.zeros((3, N))   # event-triggered reference position logged at each step
 
 k_ref = 0   # event-triggered reference pointer (equals k when USE_EVENT_TRIG=False)
 
@@ -950,7 +816,9 @@ for k in _sim_iter:
     else:
         kr = k
 
-    # outer PID: position error + velocity feedforward -> thrust + att cmd
+    Ref_log[:, k] = ref_pos[:, kr]   # log which reference slice the controller actually sees
+
+    # outer PID + feedforward: position/velocity error + acceleration feedforward
     if _USE_CYL_REF:
         r_m = max(np.sqrt(pos[0]**2 + pos[1]**2), 1e-6)
         θ_m = np.arctan2(pos[1], pos[0])
@@ -975,14 +843,16 @@ for k in _sim_iter:
         a_t = cyl_Kp[1]*e_t + cyl_Ki[1]*int_pos[1] + cyl_Kd[1]*e_ṫ
         a_z = cyl_Kp[2]*e_z + cyl_Ki[2]*int_pos[2] + cyl_Kd[2]*e_ż
 
+        # acceleration feedforward: centripetal + Coriolis already in Cartesian
+        a_ff = ref_acc[:, kr]
         a_cmd = np.array([a_r * cs - a_t * sn,
                           a_r * sn + a_t * cs,
-                          a_z])
+                          a_z]) + a_ff
     else:
         e_pos = ref_pos[:, kr] - pos
         e_vel = ref_vel[:, kr] - vel
         int_pos = np.clip(int_pos + e_pos * dt, -cyl_i_lim, cyl_i_lim)
-        a_cmd = cyl_Kp * e_pos + cyl_Ki * int_pos + cyl_Kd * e_vel
+        a_cmd = cyl_Kp * e_pos + cyl_Ki * int_pos + cyl_Kd * e_vel + ref_acc[:, kr]
 
     T_cmd = max(p.m * (a_cmd[2] + p.g), 0.1 * p.m * p.g)
 
@@ -1229,6 +1099,18 @@ if PLOT_MODE == "sim":
         print(f"  vel ṙ     :  {np.abs(_eṙ).mean():>10.3f} m/s  {np.abs(_eṙ).max():>10.3f} m/s")
         print(f"  vel θ̇     :  {np.abs(_eθ̇).mean():>10.4f} r/s  {np.abs(_eθ̇).max():>10.4f} r/s")
         print(f"  vel ż     :  {np.abs(_eż).mean():>10.3f} m/s  {np.abs(_eż).max():>10.3f} m/s")
+        if USE_EVENT_TRIG:
+            # event-triggered error: drone vs the reference the controller actually saw
+            _ev_r_m  = np.maximum(np.sqrt(X[0]**2 + X[1]**2), 1e-6)
+            _ev_θ_m  = np.arctan2(X[1], X[0])
+            _ev_er   = Ref_log[0] - _ev_r_m
+            _ev_eθ   = np.arctan2(np.sin(Ref_log[1] - _ev_θ_m), np.cos(Ref_log[1] - _ev_θ_m))
+            _ev_ez   = Ref_log[2] - X[2]
+            print(f"\n  (event-triggered reference — what controller actually tracked)")
+            print(f"  {'─'*38}")
+            print(f"  pos r     :  {np.abs(_ev_er).mean():>10.3f} m    {np.abs(_ev_er).max():>10.3f} m")
+            print(f"  pos θ     :  {np.abs(_ev_eθ).mean():>10.4f} rad  {np.abs(_ev_eθ).max():>10.4f} rad")
+            print(f"  pos z     :  {np.abs(_ev_ez).mean():>10.3f} m    {np.abs(_ev_ez).max():>10.3f} m")
     else:
         _ep = ref_pos_cart - X[0:3]
         _ev = ref_vel_cart - X[6:9]

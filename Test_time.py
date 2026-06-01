@@ -80,6 +80,275 @@ turbine_config = {
 
 transition_penalty_seconds = 45.0
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TRAJECTORY BUILDERS + MATLAB EXPORT
+# Run this file directly to regenerate trajectory .mat files.
+# ─────────────────────────────────────────────────────────────────────────────
+
+AERIAL_ACCEL_MAX = 10.0   # [m/s²] trapezoidal ramp limit — aerial phase
+WATER_ACCEL_MAX  = 2.0    # [m/s²] trapezoidal ramp limit — underwater phase
+
+from Test_time_functions import get_lawnmower_coords, get_spiral_coords
+
+# hover rotor speed — same formula and constants as Params.omega_h in quadcopterSC.py
+from geometry import total_mass as _geo_mass
+_kT = 0.039 * 1.225 * 0.80**4 / (4 * math.pi**2)   # CT_prop * rho * D^4 / (4pi^2)
+omega_h = math.sqrt(_geo_mass * 9.81 / (4 * _kT))
+
+def _arc_lengths(pts):
+    s = np.zeros(len(pts))
+    for i in range(1, len(pts)):
+        s[i] = s[i-1] + np.linalg.norm(pts[i] - pts[i-1])
+    return s
+
+def _trap_speeds(s_arr, v_cruise, a):
+    L = float(s_arr[-1])
+    if L < 1e-10:
+        return np.zeros(len(s_arr)), 0.0
+    d_ramp = v_cruise**2 / (2.0 * a)
+    v_peak = v_cruise if L >= 2.0 * d_ramp else math.sqrt(a * L)
+    d_ramp = v_peak**2 / (2.0 * a)
+    speeds = np.zeros(len(s_arr))
+    for i, s in enumerate(s_arr):
+        if s <= d_ramp:
+            speeds[i] = max(math.sqrt(2.0 * a * s), 1e-3)
+        elif s <= L - d_ramp:
+            speeds[i] = v_peak
+        else:
+            speeds[i] = max(math.sqrt(2.0 * a * (L - s)), 1e-3)
+    return speeds, v_peak
+
+def _classify_and_profile(xyz, dists, v_vert, v_horiz, a_max):
+    """Classify path gaps as vertical (0) or horizontal (1), apply trap_speeds per segment."""
+    N_pts = len(xyz)
+    gap_type = np.full(N_pts - 1, -1, dtype=int)
+    for i in range(N_pts - 1):
+        if dists[i] > 1e-10:
+            vf = abs(xyz[i+1, 2] - xyz[i, 2]) / dists[i]
+            gap_type[i] = 0 if vf > 0.7 else 1
+    speed_arr = np.zeros(N_pts)
+    i = 0
+    while i < N_pts - 1:
+        while i < N_pts - 1 and gap_type[i] == -1:
+            i += 1
+        if i >= N_pts - 1:
+            break
+        seg_t = gap_type[i]
+        v_cru = v_vert if seg_t == 0 else v_horiz
+        j = i
+        while j < N_pts - 1 and gap_type[j] == seg_t:
+            j += 1
+        s_arr = _arc_lengths(xyz[i:j+1])
+        speeds, _ = _trap_speeds(s_arr, v_cru, a_max)
+        speed_arr[i:j+1] = speeds
+        i = j
+    return speed_arr
+
+def _project_velocities(xyz, ra, ta, dists, speed_arr):
+    """Project scalar speed along path tangent into cylindrical [vr, vth, vz]."""
+    N_pts = len(ra)
+    vr_arr = np.zeros(N_pts); vth_arr = np.zeros(N_pts); vz_arr = np.zeros(N_pts)
+    for i in range(N_pts - 1):
+        if dists[i] < 1e-10:
+            continue
+        dv   = xyz[i+1] - xyz[i]
+        vx_i = (dv[0] / dists[i]) * speed_arr[i]
+        vy_i = (dv[1] / dists[i]) * speed_arr[i]
+        vz_i = (dv[2] / dists[i]) * speed_arr[i]
+        r_i  = max(ra[i], 1e-6);  th_i = ta[i]
+        vr_arr[i]  =  vx_i * np.cos(th_i) + vy_i * np.sin(th_i)
+        vth_arr[i] = (-vx_i * np.sin(th_i) + vy_i * np.cos(th_i)) / r_i
+        vz_arr[i]  = vz_i
+    vr_arr[-1] = vr_arr[-2]; vth_arr[-1] = vth_arr[-2]; vz_arr[-1] = vz_arr[-2]
+    return vr_arr, vth_arr, vz_arr
+
+def _timestamps(dists, speed_arr):
+    times = [0.0]
+    for i in range(1, len(speed_arr)):
+        d = dists[i-1]
+        if d < 1e-10:
+            times.append(times[-1])
+        else:
+            v_avg = max((speed_arr[i-1] + speed_arr[i]) / 2, 1e-6)
+            times.append(times[-1] + d / v_avg)
+    return np.array(times)
+
+def _aerial_timed_waypoints():
+    """Returns (M,7) [t, r, theta, z_sim, vr, vth, vz] and (v_scan, v_horiz).
+    z_sim = 0 at sea level. vth is theta_dot [rad/s]."""
+    ca    = cameras[air_config["camera_type"]]
+    D     = ca["D"];  fmode = air_config["flight_mode"];  v_max = float(air_config["v_max"])
+    v_frame_a = get_v_frame(D, ca["v_fov"]) if "v_fov" in ca else None
+    w_arc_a   = get_w_arc(R_base, D, ca["h_fov"], label="tower")
+    H_total   = H_water + H_air_cyl + H_air_cone
+
+    def _r(z_abs):   # radius at absolute z (seabed frame)
+        if z_abs <= H_water + H_air_cyl:
+            return R_base
+        return R_base - ((R_base - R_top) / H_air_cone) * (z_abs - (H_water + H_air_cyl))
+
+    if fmode == "lawnmower":
+        if air_config["camera_type"] == "RGB":
+            v_scan, _ = get_velocity_rgb_lawnmower(v_max, ca["gsd"], ca["max_blur"], ca["shutter"], v_frame_a, ca["v_overlap"], ca["fps"])
+        elif air_config["camera_type"] == "EVENT":
+            v_scan, _ = get_velocity_event(v_max)
+        elif air_config["camera_type"] == "HYPERSPECTRAL":
+            v_scan, _ = get_velocity_hyper_lawnmower(v_max, ca["gsd"], ca["line_rate"], ca["integration"], ca["max_blur"])
+        else:
+            v_scan = v_max
+        v_vert  = v_scan
+        v_horiz = float(air_config.get("v_horiz", v_max))
+        w_arc_step = w_arc_a * (1.0 - ca["h_overlap"])
+        za, ta = get_lawnmower_coords(H_water, H_total, R_base, w_arc_step)
+    elif fmode == "spiral":
+        pitch = v_frame_a * (1.0 - ca["v_overlap"]) if v_frame_a else w_arc_a * (1 - ca["h_overlap"])
+        if air_config["camera_type"] == "RGB":
+            v_scan, _ = get_velocity_rgb_spiral(v_max, R_base, pitch, w_arc_a, ca["gsd"], ca["max_blur"], ca["shutter"], ca["h_overlap"], ca["fps"])
+        elif air_config["camera_type"] == "EVENT":
+            v_scan, _ = get_velocity_event_spiral(v_max)
+        else:
+            v_scan = v_max
+        v_vert = v_horiz = v_scan
+        za, ta = get_spiral_coords(H_water, H_total, pitch)
+    else:
+        raise ValueError(f"Unknown flight_mode: '{fmode}'")
+
+    za = np.array(za);  ta = np.array(ta)
+    ra    = np.array([_r(z) for z in za]) + D
+    z_sim = za - H_water   # sim frame: z=0 at sea level
+    xyz   = np.column_stack([ra * np.cos(ta), ra * np.sin(ta), z_sim])
+    dists = np.array([np.linalg.norm(xyz[i+1] - xyz[i]) for i in range(len(za)-1)])
+
+    speed_arr          = _classify_and_profile(xyz, dists, v_vert, v_horiz, AERIAL_ACCEL_MAX)
+    vr, vth, vz        = _project_velocities(xyz, ra, ta, dists, speed_arr)
+    times              = _timestamps(dists, speed_arr)
+    return np.column_stack([times, ra, ta, z_sim, vr, vth, vz]), v_scan, v_horiz
+
+
+def _build_water_waypoints():
+    """Returns (M,7) [t, r, theta, z, vr, vth, vz] and (v_scan, v_horiz).
+    z=0 at surface, negative downward. vth is theta_dot [rad/s]."""
+    cw      = cameras[water_config["camera_type"]]
+    D       = cw["D"];  v_max = float(water_config["v_max"])
+    v_horiz = float(water_config.get("v_horiz", v_max));  fmode = water_config["flight_mode"]
+    v_frame_w = get_v_frame(D, cw["v_fov"]) if "v_fov" in cw else None
+    w_arc_w   = get_w_arc(R_base, D, cw["h_fov"], label="monopile UW")
+    r_inspect = R_base + D
+
+    if fmode == "lawnmower":
+        if water_config["camera_type"] == "RGB":
+            v_scan, _ = get_velocity_rgb_lawnmower(v_max, cw["gsd"], cw["max_blur"], cw["shutter"], v_frame_w, cw["v_overlap"], cw["fps"])
+        elif water_config["camera_type"] == "HYPERSPECTRAL":
+            v_scan, _ = get_velocity_hyper_lawnmower(v_max, cw["gsd"], cw["line_rate"], cw["integration"], cw["max_blur"])
+        else:
+            v_scan = v_max
+        strip_w  = w_arc_w * (1.0 - cw["h_overlap"])
+        n_strips = int(np.ceil(2.0 * np.pi * R_base / strip_w))
+        d_theta  = (2.0 * np.pi) / n_strips
+        ra_list, ta_list, za_list = [], [], []
+        theta = 0.0
+        for s_idx in range(n_strips):
+            z_start = 0.0      if (s_idx % 2 == 0) else -H_water
+            z_end   = -H_water if (s_idx % 2 == 0) else 0.0
+            ra_list.extend([r_inspect] * 30);  ta_list.extend([theta] * 30)
+            za_list.extend(np.linspace(z_start, z_end, 30))
+            if s_idx < n_strips - 1:
+                theta_next = theta + d_theta
+                ra_list.extend([r_inspect] * 30)
+                ta_list.extend(np.linspace(theta, theta_next, 30))
+                za_list.extend([z_end] * 30)
+                theta = theta_next
+        ra = np.array(ra_list);  ta = np.array(ta_list);  za = np.array(za_list)
+    else:
+        raise ValueError(f"Underwater export only supports lawnmower. Got: '{fmode}'")
+
+    xyz   = np.column_stack([ra * np.cos(ta), ra * np.sin(ta), za])
+    dists = np.array([np.linalg.norm(xyz[i+1] - xyz[i]) for i in range(len(za)-1)])
+    speed_arr   = _classify_and_profile(xyz, dists, v_scan, v_horiz, WATER_ACCEL_MAX)
+    vr, vth, vz = _project_velocities(xyz, ra, ta, dists, speed_arr)
+    times       = _timestamps(dists, speed_arr)
+    return np.column_stack([times, ra, ta, za, vr, vth, vz]), v_scan, v_horiz
+
+
+def _waypoints_to_matrix(wp):
+    """Convert (M,7) [t,r,theta,z,vr,vth,vz] to (M,9) [r,theta,z,vr,vth,vz,ax,ay,az].
+    vth is theta_dot [rad/s]. ax,ay,az are Cartesian feedforward accelerations."""
+    t  = wp[:, 0];  r  = wp[:, 1];  th = wp[:, 2];  z  = wp[:, 3]
+    vr = wp[:, 4];  vth= wp[:, 5];  vz = wp[:, 6]
+    # make timestamps strictly monotonic to avoid divide-by-zero in np.gradient
+    # at zero-length junctions where consecutive t values are identical
+    t_safe = t.copy()
+    for i in range(1, len(t_safe)):
+        if t_safe[i] <= t_safe[i-1]:
+            t_safe[i] = t_safe[i-1] + 1e-9
+    ar  = np.gradient(vr,  t_safe)
+    ath = np.gradient(vth, t_safe)
+    az  = np.gradient(vz,  t_safe)
+    ax  = (ar - r*vth**2) * np.cos(th) - (r*ath + 2*vr*vth) * np.sin(th)
+    ay  = (ar - r*vth**2) * np.sin(th) + (r*ath + 2*vr*vth) * np.cos(th)
+    return np.column_stack([r, th, z, vr, vth, vz, ax, ay, az])
+
+
+def export_trajectories(save_dir=r'C:\Users\banda\Documents\MATLAB\UAUV Control\Aerial'):
+    """Build aerial and underwater trajectory matrices and save as .m init scripts."""
+    import os
+    os.makedirs(save_dir, exist_ok=True)
+
+    for label, build_fn, a_max in [
+        ("aerial",      _aerial_timed_waypoints, AERIAL_ACCEL_MAX),
+        ("underwater",  _build_water_waypoints,  WATER_ACCEL_MAX ),
+    ]:
+        print(f"Building {label} trajectory...", flush=True)
+        wp, v_scan, v_horiz = build_fn()
+        mat = _waypoints_to_matrix(wp)
+
+        # append ref_yaw: drone faces inward (theta + pi), wrapped to +-pi
+        ref_yaw = np.arctan2(np.sin(wp[:, 2] + np.pi), np.cos(wp[:, 2] + np.pi))
+        mat = np.column_stack([mat, ref_yaw])
+
+        # verify 3-D speed magnitude never exceeds v_scan or v_horiz
+        speed_3d = np.sqrt(wp[:,4]**2 + (wp[:,1]*wp[:,5])**2 + wp[:,6]**2)
+        v_limit  = max(v_scan, v_horiz)
+        excess   = float(np.max(speed_3d)) - v_limit
+        if excess > 0.01:
+            print(f"  WARNING: max speed {np.max(speed_3d):.4f} m/s exceeds limit {v_limit:.3f} m/s by {excess:.4f} m/s")
+        else:
+            print(f"  Speed OK : max {np.max(speed_3d):.4f} m/s  <=  v_limit {v_limit:.3f} m/s")
+
+        fname = os.path.join(save_dir, f'trajectory_{label}.m')
+        M, N_col = mat.shape
+        with open(fname, 'w') as f:
+            f.write(f"%% Trajectory: {label}\n")
+            f.write(f"% Auto-generated by Test_time.py\n")
+            f.write(f"% Columns: r [m], theta [rad], z [m], vr [m/s], vth [rad/s], vz [m/s], ax [m/s^2], ay [m/s^2], az [m/s^2], ref_yaw [rad]\n")
+            f.write(f"% {M} waypoints  |  duration {wp[-1,0]:.1f} s  |  v_scan {v_scan:.4f} m/s\n\n")
+
+            f.write(f"v_scan_{label}      = {v_scan:.6f};   % [m/s]\n")
+            f.write(f"v_horiz_{label}     = {v_horiz:.6f};   % [m/s]\n")
+            f.write(f"a_max_{label}       = {a_max:.6f};   % [m/s^2]\n")
+            f.write(f"duration_{label}    = {wp[-1,0]:.6f};  % [s]\n")
+            f.write(f"n_waypoints_{label} = {M};\n")
+            if label == "aerial":
+                f.write(f"omega_h             = {omega_h:.6f};   % [rad/s] hover rotor speed\n")
+            f.write("\n")
+
+            f.write(f"trajectory = [ ...\n")
+            for i, row in enumerate(mat):
+                vals = "  " + "  ".join(f"{v:15.8f}" for v in row)
+                sep  = "; ..." if i < M - 1 else "];"
+                f.write(vals + sep + "\n")
+
+            if label == "aerial":
+                f.write(f"\nx0        = zeros(16,1);\n")
+                f.write(f"x0(1)     = trajectory(1, 1) * cos(deg2rad(trajectory(1, 2)));\n")
+                f.write(f"x0(2)     = trajectory(1, 1) * sin(deg2rad(trajectory(1, 2)));\n")
+                f.write(f"x0(3)     = trajectory(1, 3);\n")
+                f.write(f"x0(5)     = trajectory(1, 2);\n")
+                f.write(f"x0(13:16) = omega_h;\n")
+                f.write(f"x0(6)     = trajectory(1, 10);\n")
+
+        print(f"  Saved  : {fname}  ({M} waypoints, {wp[-1,0]:.0f} s)")
+
 if __name__ == "__main__":
     # ---------------------------------------------------------
     # phase 1: underwater
@@ -229,3 +498,9 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     print("\nGenerating 3D interactive plot...")
     plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config, cameras)
+
+    # ---------------------------------------------------------
+    # export trajectory .mat files for MATLAB
+    # ---------------------------------------------------------
+    print("\nExporting trajectory matrices to MATLAB...")
+    export_trajectories()
