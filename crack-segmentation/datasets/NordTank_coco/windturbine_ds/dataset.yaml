@@ -1,0 +1,7 @@
+path: /Users/nvdo/TUD/DSE/Code/Dual-Domain-UAVA/crack-segmentation/datasets/NordTank_coco
+train: images/train
+val: images/val
+
+names:
+  0: dirt
+  1: damage

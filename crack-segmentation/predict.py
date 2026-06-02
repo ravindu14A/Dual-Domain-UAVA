@@ -49,7 +49,7 @@ def draw_segmentation(frame, results, model):
 
 
 def main():
-    model = YOLO("./models/best.pt")
+    model = YOLO("./models/best_100.pt")
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -67,7 +67,7 @@ def main():
         if not ret:
             break
 
-        results = model(frame, verbose=False, device="mps", conf=0.4, imgsz=640)[0]
+        results = model(frame, verbose=False, device="mps", conf=0.65, imgsz=640)[0]
 
         now = time.time()
         fps = 1.0 / (now - prev_time)
