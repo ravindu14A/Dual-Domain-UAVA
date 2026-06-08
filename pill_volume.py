@@ -147,7 +147,6 @@ def draw(R, L, mass):
 def update(_):
     draw(slider_R.val, slider_L.val, slider_mass.val)
 
-
 slider_R.on_changed(update)
 slider_L.on_changed(update)
 slider_mass.on_changed(update)
