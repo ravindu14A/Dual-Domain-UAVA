@@ -101,26 +101,26 @@ def time_spiral(d_total, v_path):
 
 
 def get_lawnmower_coords(z_start, z_end, R_max, w_arc, theta_start=0.0):
-    """Generate (z, theta) sample points for a lawnmower path.
+    """Generate (z, theta) sample points for a lawnmower path (one full revolution).
     Returns z_coords, theta_coords as lists."""
     z_coords, theta_coords = [], []
     num_strips = int(np.ceil((2 * np.pi * R_max) / w_arc))
     d_theta = (2 * np.pi) / num_strips
     current_theta = theta_start
 
-    for _ in range(num_strips):
-        z_coords.extend(np.linspace(z_start, z_end, 30))  # up
+    for i in range(num_strips):
+        going_up = (i % 2 == 0)
+        z_from = z_start if going_up else z_end
+        z_to   = z_end   if going_up else z_start
+        # vertical strip
+        z_coords.extend(np.linspace(z_from, z_to, 30))
         theta_coords.extend([current_theta] * 30)
-        next_theta = current_theta + d_theta
-        z_coords.extend([z_end] * 30)                     # across top
-        theta_coords.extend(np.linspace(current_theta, next_theta, 30))
-        current_theta = next_theta
-        z_coords.extend(np.linspace(z_end, z_start, 30))  # down
-        theta_coords.extend([current_theta] * 30)
-        next_theta = current_theta + d_theta
-        z_coords.extend([z_start] * 30)                    # across bottom
-        theta_coords.extend(np.linspace(current_theta, next_theta, 30))
-        current_theta = next_theta
+        # horizontal step (skip after final strip)
+        if i < num_strips - 1:
+            next_theta = current_theta + d_theta
+            z_coords.extend([z_to] * 30)
+            theta_coords.extend(np.linspace(current_theta, next_theta, 30))
+            current_theta = next_theta
 
     return z_coords, theta_coords
 
@@ -135,7 +135,7 @@ def get_spiral_coords(z_start, z_end, w_flat, theta_start=0.0):
     return z_coords.tolist(), theta_coords.tolist()
 
 
-def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade, R_blade, water_config, air_config, turbine_config, cameras):
+def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, blade_span, blade_chord, water_config, air_config, turbine_config, cameras):
     """3D matplotlib plot of the dual-environment flight paths."""
     H_total = H_water + H_air_cyl + H_air_cone
 
@@ -148,8 +148,6 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     w_arc_a   = get_w_arc(R_base, ca["D"], ca["h_fov"], label="tower")
 
     ct = cameras[turbine_config["camera_type"]]
-    v_frame_t = get_v_frame(ct["D"], ct["v_fov"]) if "v_fov" in ct else None
-    w_arc_t   = get_w_arc(R_blade, ct["D"], ct["h_fov"], label="turbine blade")
 
     def get_radius(z):
         if z <= H_water + H_air_cyl:
@@ -205,28 +203,59 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     ra = np.array([get_radius(z) + ca["D"] for z in za])
     ax.plot(ra*np.cos(ta), ra*np.sin(ta), za, color='red', linewidth=1.5, label=f'Air Phase ({air_config["flight_mode"]})')
 
-    # turbine path and surfaces (3 blades)
-    if turbine_config["flight_mode"] == "lawnmower":
-        zb_list, tb_list = get_lawnmower_coords(0, H_blade, R_blade, w_arc_t * (1 - ct["h_overlap"]))
-    else:
-        zb_list, tb_list = get_spiral_coords(0, H_blade, v_frame_t * (1 - ct["v_overlap"]))
-        
-    xb_arr = R_blade * np.cos(tb_list)
-    yb_arr = R_blade * np.sin(tb_list)
-    zb_arr = np.array(zb_list)
-    
-    # blade surface meshes
-    z_b = np.linspace(0, H_blade, 20)
-    theta_b = np.linspace(0, 2 * np.pi, 20)
-    tb_grid, zb_grid = np.meshgrid(theta_b, z_b)
-    xb_grid = R_blade * np.cos(tb_grid)
-    yb_grid = R_blade * np.sin(tb_grid)
-    
+    # turbine path and surfaces — slab model (top + bottom faces only)
+    D_t        = ct["D"]
+    strip_w_t  = 2.0 * D_t * np.tan(np.radians(ct["h_fov"] / 2))
+    strip_step = strip_w_t * (1.0 - ct["h_overlap"])
+    n_strips_t = int(np.ceil(blade_chord / strip_step))
+    x_strips   = np.linspace(-blade_chord / 2, blade_chord / 2, n_strips_t)
+
+    # Blade slab surface mesh (flat rectangle at y=0 in blade-local frame)
+    xb_sg, zb_sg = np.meshgrid(np.linspace(-blade_chord / 2, blade_chord / 2, 4),
+                                np.linspace(0, blade_span, 30))
+    yb_sg = np.zeros_like(xb_sg)
+
+    # Lawnmower path — one continuous connected path: top surface → root transition → bottom surface
+    xb_path, yb_path, zb_path = [], [], []
+
+    # Top surface (+D)
+    for i, xb in enumerate(x_strips):
+        z0 = 0.0 if i % 2 == 0 else float(blade_span)
+        z1 = float(blade_span) if i % 2 == 0 else 0.0
+        for z in np.linspace(z0, z1, 20):
+            xb_path.append(xb); yb_path.append(D_t); zb_path.append(z)
+        if i < n_strips_t - 1:
+            z_here = zb_path[-1]
+            for x2 in np.linspace(xb, x_strips[i + 1], 5)[1:]:
+                xb_path.append(x2); yb_path.append(D_t); zb_path.append(z_here)
+
+    # Transition at blade TIP: fly to z=blade_span, sweep y from +D to -D
+    x_end = xb_path[-1]; z_end = zb_path[-1]
+    if abs(z_end - float(blade_span)) > 0.01:
+        for z in np.linspace(z_end, float(blade_span), 10)[1:]:
+            xb_path.append(x_end); yb_path.append(D_t); zb_path.append(z)
+    for y in np.linspace(D_t, -D_t, 8)[1:]:
+        xb_path.append(x_end); yb_path.append(y); zb_path.append(float(blade_span))
+
+    # Bottom surface (-D): starts at tip, reversed z parity (scans toward root)
+    x_strips_bot = x_strips[::-1]
+    for i, xb in enumerate(x_strips_bot):
+        z0 = float(blade_span) if i % 2 == 0 else 0.0
+        z1 = 0.0 if i % 2 == 0 else float(blade_span)
+        for z in np.linspace(z0, z1, 20):
+            xb_path.append(xb); yb_path.append(-D_t); zb_path.append(z)
+        if i < n_strips_t - 1:
+            z_here = zb_path[-1]
+            for x2 in np.linspace(xb, x_strips_bot[i + 1], 5)[1:]:
+                xb_path.append(x2); yb_path.append(-D_t); zb_path.append(z_here)
+
+    xb_path = np.array(xb_path);  yb_path = np.array(yb_path);  zb_path = np.array(zb_path)
+
     for idx, angle in enumerate([0, 120, 240]):
-        x_surf, y_surf, z_surf = transform_coords(xb_grid, yb_grid, zb_grid, angle, H_total)
-        ax.plot_surface(x_surf, y_surf, z_surf, color='gold', alpha=0.3, edgecolor='none')
-        x_path, y_path, z_path = transform_coords(xb_arr, yb_arr, zb_arr, angle, H_total)
-        lbl = f'Turbine Phase ({turbine_config["flight_mode"]})' if idx == 0 else ""  # label once
+        x_surf, y_surf, z_surf = transform_coords(xb_sg, yb_sg, zb_sg, angle, H_total)
+        ax.plot_surface(x_surf, y_surf, z_surf, color='gold', alpha=0.35, edgecolor='none')
+        x_path, y_path, z_path = transform_coords(xb_path, yb_path, zb_path, angle, H_total)
+        lbl = 'Turbine Phase (slab)' if idx == 0 else ""
         ax.plot(x_path, y_path, z_path, color='orange', linewidth=1.5, label=lbl)
 
     ax.set_title("Full Wind Turbine Inspection Path", fontsize=14, fontweight='bold')
@@ -234,7 +263,7 @@ def plot_inspection_route(R_base, R_top, H_water, H_air_cyl, H_air_cone, H_blade
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Altitude Z (m)")
     
-    max_dim = max(R_base * 4, H_total + H_blade)
+    max_dim = max(R_base * 4, H_total + blade_span)
     ax.set_xlim([-max_dim / 2, max_dim / 2])
     ax.set_ylim([-max_dim / 2, max_dim / 2])
     ax.set_zlim([0, max_dim])

@@ -187,6 +187,7 @@ def draw(R, L, w, alpha_deg, R_prop, gap, overlap):
     ax.fill(xs, ys, color='#dce8f5', zorder=1)
     ax.plot(np.append(xs, xs[0]), np.append(ys, ys[0]),
             color='steelblue', lw=2, zorder=2)
+    
     # centre cross
     ax.plot(0, 0, '+', color='grey', ms=10, mew=1.2, zorder=3)
 
