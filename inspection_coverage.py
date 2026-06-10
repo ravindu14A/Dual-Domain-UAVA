@@ -44,6 +44,11 @@ R_DETECT_SC = 6.0   # [m]  radar/lidar short-range detection radius
 # --- rectangular pyramid FOV ---
 # hfov      : full horizontal angle [deg]  (half-angle = hfov / 2)
 # vfov      : full vertical   angle [deg]  (half-angle = vfov / 2)
+#
+# --- 360 degree disk sonar ---
+# type         : "disk360"   (no 'face' needed)
+# vfov_deg     : total vertical opening angle [deg] of the sonar sheet
+# z_offset_cm  : height above (+) or below (-) body centre [cm]
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  UNDERWATER (UW) CONFIGURATION  —  box body, no arms
@@ -63,6 +68,7 @@ UW = {
         {"name": "Ping2 Sonar",  "face": "top",    "pos_cm":  18.5,  "beamwidth": 30},
         {"name": "Ping2 Sonar",  "face": "bottom", "pos_cm": -18.5,  "beamwidth": 30},
         {"name": "Ping2 Sonar",  "face": "bottom", "pos_cm":  18.5,  "beamwidth": 30},
+        {"name": "360 Disk Sonar", "type": "disk360", "vfov_deg": 20, "z_offset_cm": 0},
     ],
 }
 
@@ -125,6 +131,19 @@ def _parse(sensor_list, cfg):
 
     out = []
     for s in sensor_list:
+        # ── 360° disk sonar — special type, no face ───────────────────────────
+        if s.get("type") == "disk360":
+            z_off  = s.get("z_offset_cm", 0.0) / 100.0
+            pos    = np.array([0., 0., z_off])
+            half_v = np.radians(s.get("vfov_deg", 10.0) / 2.0)
+            out.append({"name": s["name"], "pos": pos,
+                        "fov_type": "disk360",
+                        "half_v": half_v,
+                        "vfov_deg": s.get("vfov_deg", 10.0),
+                        "dir": np.array([1., 0., 0.]),   # unused, kept for API
+                        "face": "—"})
+            continue
+
         face = s["face"]
         d    = _FACE_DIR[face].copy()
 
@@ -211,6 +230,31 @@ def _draw_pyramid(ax, pos, direction, h_axis, v_axis, half_h, half_v, length,
         ax.plot([pos[0], ci[0]], [pos[1], ci[1]], [pos[2], ci[2]],
                 color=color, lw=0.8, alpha=0.55)
 
+def _draw_disk360(ax, pos, half_v, length, color, alpha=0.25, n=80):
+    """Draw a flat annular wedge representing a 360° disk sonar.
+    Shows the upper and lower extent rings + transparent fill between them."""
+    phi = np.linspace(0, 2 * np.pi, n)
+    dz  = length * np.tan(half_v)   # vertical extent at range = length
+    for sign in (+1, -1):
+        zr = pos[2] + sign * dz
+        xr = pos[0] + length * np.cos(phi)
+        yr = pos[1] + length * np.sin(phi)
+        ax.plot(xr, yr, np.full_like(phi, zr), color=color, lw=1.2, alpha=0.7)
+    # filled wedge faces (top and bottom disc)
+    for sign in (+1, -1):
+        zr   = pos[2] + sign * dz
+        ring = np.column_stack([pos[0] + length * np.cos(phi),
+                                pos[1] + length * np.sin(phi),
+                                np.full(n, zr)])
+        ax.add_collection3d(Poly3DCollection([ring.tolist()],
+                                              alpha=alpha, facecolor=color, edgecolor='none'))
+    # vertical lines every 90° to show wedge depth
+    for ang in np.linspace(0, 2 * np.pi, 5)[:-1]:
+        xe = pos[0] + length * np.cos(ang)
+        ye = pos[1] + length * np.sin(ang)
+        ax.plot([xe, xe], [ye, ye], [pos[2] - dz, pos[2] + dz],
+                color=color, lw=0.8, alpha=0.55)
+
 def _rotor_disc(ax, cx, cy, r, cz=0., color='dimgray', alpha=0.30):
     phi  = np.linspace(0, 2 * np.pi, 50)
     vx   = cx + r * np.cos(phi)
@@ -263,6 +307,11 @@ def _run(label, cfg, pts):
         vec     = pts - sb["pos"]                          # (N,3) from sensor to point
         norm    = np.linalg.norm(vec, axis=1, keepdims=True)
         vec_hat = vec / (norm + 1e-9)
+        if sb['fov_type'] == 'disk360':
+            # detected if elevation angle from horizontal plane is within half_v
+            horiz = np.sqrt(vec_hat[:, 0]**2 + vec_hat[:, 1]**2)
+            elev  = np.abs(np.arctan2(np.abs(vec_hat[:, 2]), horiz + 1e-9))
+            return elev <= sb["half_v"]
         if sb['fov_type'] == 'cone':
             return vec_hat @ sb["dir"] >= np.cos(sb["half_angle"])
         p_d      = vec_hat @ sb["dir"]
@@ -283,7 +332,9 @@ def _run(label, cfg, pts):
     print(f"  {'-'*54}")
     for sb in sl:
         solo = 100.0 * _in_fov(sb, pts).sum() / len(pts)
-        if sb['fov_type'] == 'cone':
+        if sb['fov_type'] == 'disk360':
+            fov_str = f"360° disk  V {sb['vfov_deg']}°"
+        elif sb['fov_type'] == 'cone':
             fov_str = f"BW {sb['beamwidth']}°"
         else:
             fov_str = f"H {sb['hfov']}° × V {sb['vfov']}°"
@@ -292,7 +343,7 @@ def _run(label, cfg, pts):
 
     # ── colours ───────────────────────────────────────────────────────────────
     unique_names = list(dict.fromkeys(s["name"] for s in sensor_list))
-    cmap         = plt.cm.get_cmap("tab10", max(len(unique_names), 1))
+    cmap         = plt.colormaps["tab10"].resampled(max(len(unique_names), 1))
     name_color   = {name: cmap(i) for i, name in enumerate(unique_names)}
 
     # ── plot ──────────────────────────────────────────────────────────────────
@@ -360,7 +411,9 @@ def _run(label, cfg, pts):
     legend_hdls = []
     for sb in sl:
         col = name_color[sb["name"]]
-        if sb['fov_type'] == 'cone':
+        if sb['fov_type'] == 'disk360':
+            _draw_disk360(ax, sb["pos"], sb["half_v"], CONE_LENGTH, col)
+        elif sb['fov_type'] == 'cone':
             _draw_cone(ax, sb["pos"], sb["dir"], sb["half_angle"], CONE_LENGTH, col)
         else:
             _draw_pyramid(ax, sb["pos"], sb["dir"], sb["h_axis"], sb["v_axis"],

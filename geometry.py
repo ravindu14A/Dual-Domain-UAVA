@@ -7,6 +7,25 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+# ── CATIA OVERRIDE ────────────────────────────────────────────────────────────
+# Set True to use mass/inertia from the CATIA export (DSE30_External_MainVehicleAssembly,
+# measured 2026-06-09).  Set False to use the analytical model below.
+# NOTE: CATIA values cover the SC (aerial) config only.  The UW inertias
+#       (Ixx_uw / Iyy_uw / Izz_uw) are always computed analytically regardless.
+USE_CATIA_INERTIA = False
+
+# CATIA-derived values (principal moments — see 'wat dis 2.csv')
+#   mass   : 30.407 kg   (full assembly incl. sensors, battery, thrusters)
+#   Ixx    : 1.4215 kg·m²  (principal M1, roll  — CATIA-frame Ixx = 1.4961)
+#   Iyy    : 4.7290 kg·m²  (principal M2, pitch — CATIA-frame Iyy = 4.6549)
+#   Izz    : 5.4706 kg·m²  (principal M3, yaw   — CATIA-frame Izz = 5.4701)
+#   Off-diagonal Ixy = 0.489 kg·m² (ignored; sim assumes diagonal inertia tensor)
+_CATIA_mass = 30.407
+_CATIA_Ixx  =  1.4215
+_CATIA_Iyy  =  4.7290
+_CATIA_Izz  =  5.4706
+# ─────────────────────────────────────────────────────────────────────────────
+
 # --- parameters (edit these) ---
 
 # pill hull
@@ -34,7 +53,7 @@ H_box = 2.0 * R_pill            # [m] pill diameter (bounding-box z)
 V_pill = np.pi * R_pill**2 * L_cyl + (4.0 / 3.0) * np.pi * R_pill**3
 
 # arm angles: FL=45, RL=135, RR=225, FR=315
-arm_angles_deg = [45.0, 135.0, 225.0, 315.0]
+arm_angles_deg = [30.5, 149.5, 220.5, 329.5]
 arm_angles_rad = np.radians(arm_angles_deg)
 
 z_attach = R_pill   # arms attach at the top of the circular cross-section
@@ -109,6 +128,24 @@ Izz_motors = sum(m_motor * (r[0]**2 + r[1]**2) for r in motor_pos_c)
 Ixx = Ixx_hull + Ixx_arms + Ixx_motors
 Iyy = Iyy_hull + Iyy_arms + Iyy_motors
 Izz = Izz_hull + Izz_arms + Izz_motors
+
+# Store analytical results before any override so comparison is always available
+_analytic_mass = total_mass
+_analytic_Ixx  = Ixx
+_analytic_Iyy  = Iyy
+_analytic_Izz  = Izz
+
+if USE_CATIA_INERTIA:
+    total_mass = _CATIA_mass
+    Ixx        = _CATIA_Ixx
+    Iyy        = _CATIA_Iyy
+    Izz        = _CATIA_Izz
+
+# --- control linearisation point (shared by root-locus and pole-placement) ---
+# Both tools must linearise at the same point — edit here, not in the individual files.
+LIN_POS   = np.array([0.0, 0.0, 0.0])   # [m]   inertial position
+LIN_EULER = np.array([0.0, 0.0, 0.0])   # [rad] phi, theta, psi  (0 = level hover)
+LIN_VEL   = np.array([0.0, 0.0, 0.0])   # [m/s] inertial velocity (0 = drag drops out)
 
 # --- underwater inertia (folded-arm config) ---
 _uw_frac = UW_ARM_FOLD_FRAC
@@ -186,9 +223,10 @@ def _draw_capsule(ax, cx, cy, cz, R, L, color='steelblue', alpha=0.35, n=40):
 
 
 if __name__ == "__main__":
-    print("=" * 52)
-    print("UAUV MASS PROPERTIES  (pill hull)")
-    print("=" * 52)
+    src = "CATIA" if USE_CATIA_INERTIA else "Analytical"
+    print("=" * 60)
+    print(f"UAUV MASS PROPERTIES  (pill hull)   [source: {src}]")
+    print("=" * 60)
     print(f"  Hull (pill)     : {m_hull:.3f} kg   R={R_pill:.3f} m  L_cyl={L_cyl:.3f} m")
     print(f"  Total length    : {L_box:.3f} m  (L_cyl + 2R)")
     print(f"  Hull volume     : {V_pill*1e3:.2f} L  ({V_pill:.5f} m³)")
@@ -201,13 +239,30 @@ if __name__ == "__main__":
     print(f"  Ixx (roll)      : {Ixx:.5f} kg·m²")
     print(f"  Iyy (pitch)     : {Iyy:.5f} kg·m²")
     print(f"  Izz (yaw)       : {Izz:.5f} kg·m²")
-    print("=" * 52)
+    print("=" * 60)
     print()
     print(f"  UW Ixx          : {Ixx_uw:.5f} kg·m²")
     print(f"  UW Iyy          : {Iyy_uw:.5f} kg·m²")
     print(f"  UW Izz          : {Izz_uw:.5f} kg·m²")
     print(f"  L_fold          : {UW_L_fold:.3f} m  (frac={UW_ARM_FOLD_FRAC})")
-    print("=" * 52)
+    print("=" * 60)
+
+    # ── Comparison: analytical model vs CATIA ────────────────────────────────
+    print()
+    print("=" * 60)
+    print("  ANALYTICAL MODEL  vs  CATIA MEASUREMENT")
+    print(f"  {'Property':<18} {'Analytical':>12} {'CATIA':>12} {'diff (abs)':>12} {'diff (%)':>10}")
+    print(f"  {'-'*18} {'-'*12} {'-'*12} {'-'*12} {'-'*10}")
+    for label, an_val, ca_val in [
+        ("mass  [kg]",    _analytic_mass, _CATIA_mass),
+        ("Ixx   [kg·m²]", _analytic_Ixx,  _CATIA_Ixx),
+        ("Iyy   [kg·m²]", _analytic_Iyy,  _CATIA_Iyy),
+        ("Izz   [kg·m²]", _analytic_Izz,  _CATIA_Izz),
+    ]:
+        delta    = ca_val - an_val
+        pct      = delta / an_val * 100.0 if an_val != 0 else float('nan')
+        print(f"  {label:<18} {an_val:>12.4f} {ca_val:>12.4f} {delta:>+12.4f} {pct:>+7.1f}%")
+    print("=" * 60)
 
     _ang = np.linspace(0, 2 * np.pi, 40)
     motor_labels = ['FL', 'RL', 'RR', 'FR']

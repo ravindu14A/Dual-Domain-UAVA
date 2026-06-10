@@ -59,6 +59,7 @@ class KinematicEKF12:
         self.x = np.zeros(12)
         self.P = np.eye(12) * 10.0
         self._build_R()
+        self.x_prior = np.zeros(12)   # state after predict+gyro, before slow corrections
 
     # ── R matrices ────────────────────────────────────────────────────────────
 
@@ -247,6 +248,7 @@ class KinematicEKF12:
             accel, gyro, mag = imu
             self.predict(accel, gyro, dt)
             self.correct_gyro(gyro)
+            self.x_prior = self.x.copy()   # prior: after IMU, before slow corrections
 
         if ahrs is not None:
             self.correct_ahrs(ahrs)
@@ -303,7 +305,13 @@ if __name__ == '__main__':
     ekf.x[6:9]  = X[3:6,  0]
     ekf.x[9:12] = X[9:12, 0]
 
-    X_ekf = np.zeros((12, N))
+    X_ekf  = np.zeros((12, N))
+
+    # sparse measurement logs — NaN where sensor didn't fire this step
+    meas_gnss_pos = np.full((3, N), np.nan)
+    meas_gnss_vel = np.full((3, N), np.nan)
+    meas_baro_z   = np.full(N,      np.nan)
+    meas_ahrs     = np.full((3, N), np.nan)
 
     try:
         from tqdm import tqdm as _tqdm
@@ -322,6 +330,14 @@ if __name__ == '__main__':
             _t_sub = t[k] + _j * _DT_EKF
             _meas  = suite.tick(_t_sub, _DT_EKF, _a_inertial, euler, wb, pos, vel)
             _ekf_x = ekf.update(_meas, _DT_EKF)
+            # log measurements from whichever sub-step they fire on
+            if _meas.get('gnss') is not None:
+                meas_gnss_pos[:, k] = _meas['gnss'][0]
+                meas_gnss_vel[:, k] = _meas['gnss'][1]
+            if _meas.get('baro') is not None:
+                meas_baro_z[k] = _meas['baro']
+            if _meas.get('ahrs') is not None:
+                meas_ahrs[:, k] = _meas['ahrs']
         X_ekf[:, k] = _ekf_x
 
     X_ekf[:, -1] = X_ekf[:, -2]
@@ -334,10 +350,18 @@ if __name__ == '__main__':
     fig_e1, axes_e1 = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
     fig_e1.suptitle("EKF: Position  --  Truth vs Estimate", fontsize=13)
     for i, lbl in enumerate(['x  [m]', 'y  [m]', 'z  [m]']):
-        axes_e1[i].plot(t_p, X_p[i],            color='steelblue', lw=1.5, label='Truth')
-        axes_e1[i].plot(t_p, X_ekf[i,   ::_ps], color='tomato',    lw=1.2, ls='--', label='EKF')
-        axes_e1[i].set_ylabel(lbl); axes_e1[i].grid(True)
-        if i == 0: axes_e1[i].legend(loc='upper right')
+        ax = axes_e1[i]
+        _gm = np.isfinite(meas_gnss_pos[i])
+        ax.scatter(t[_gm], meas_gnss_pos[i, _gm], s=10, color='limegreen', zorder=1, alpha=0.6,
+                   label='GNSS meas' if i == 0 else '_')
+        if i == 2:
+            _bm = np.isfinite(meas_baro_z)
+            ax.scatter(t[_bm][::5], meas_baro_z[_bm][::5], s=8, color='orange', zorder=1, alpha=0.6,
+                       label='Baro meas')
+        ax.plot(t_p, X_ekf[i, ::_ps],  color='tomato',    lw=1.2, ls='--', zorder=4, label='EKF')
+        ax.plot(t_p, X_p[i],           color='steelblue', lw=1.5,          zorder=3, label='Truth')
+        ax.set_ylabel(lbl); ax.grid(True)
+        if i == 0 or i == 2: ax.legend(loc='upper right', fontsize=8)
     axes_e1[-1].set_xlabel("Time  [s]")
     for ax in fig_e1.axes: ax.tick_params(labelbottom=True)
     fig_e1.tight_layout()
@@ -346,10 +370,14 @@ if __name__ == '__main__':
     fig_e2, axes_e2 = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
     fig_e2.suptitle("EKF: Velocity  --  Truth vs Estimate", fontsize=13)
     for i, lbl in enumerate(['vx  [m/s]', 'vy  [m/s]', 'vz  [m/s]']):
-        axes_e2[i].plot(t_p, X_p[6+i],          color='steelblue', lw=1.5, label='Truth')
-        axes_e2[i].plot(t_p, X_ekf[3+i, ::_ps], color='tomato',    lw=1.2, ls='--', label='EKF')
-        axes_e2[i].set_ylabel(lbl); axes_e2[i].grid(True)
-        if i == 0: axes_e2[i].legend(loc='upper right')
+        ax = axes_e2[i]
+        _gm = np.isfinite(meas_gnss_vel[i])
+        ax.scatter(t[_gm], meas_gnss_vel[i, _gm], s=10, color='limegreen', zorder=1, alpha=0.6,
+                   label='GNSS vel meas' if i == 0 else '_')
+        ax.plot(t_p, X_ekf[3+i, ::_ps], color='tomato',    lw=1.2, ls='--', zorder=4, label='EKF')
+        ax.plot(t_p, X_p[6+i],          color='steelblue', lw=1.5,          zorder=3, label='Truth')
+        ax.set_ylabel(lbl); ax.grid(True)
+        if i == 0: ax.legend(loc='upper right', fontsize=8)
     axes_e2[-1].set_xlabel("Time  [s]")
     for ax in fig_e2.axes: ax.tick_params(labelbottom=True)
     fig_e2.tight_layout()
@@ -358,23 +386,28 @@ if __name__ == '__main__':
     fig_e3, axes_e3 = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
     fig_e3.suptitle("EKF: Euler Angles  --  Truth vs Estimate", fontsize=13)
     for i, lbl in enumerate(['phi  [deg]', 'theta  [deg]', 'psi  [deg]']):
+        ax = axes_e3[i]
+        _am = np.isfinite(meas_ahrs[i])
+        ax.scatter(t[_am], np.degrees(meas_ahrs[i, _am]), s=8, color='mediumpurple', zorder=1, alpha=0.6,
+                   label='AHRS meas' if i == 0 else '_')
         _truth_ang = np.arctan2(np.sin(X_p[3+i]), np.cos(X_p[3+i]))
-        axes_e3[i].plot(t_p, np.degrees(_truth_ang),         color='steelblue', lw=1.5, label='Truth')
-        axes_e3[i].plot(t_p, np.degrees(X_ekf[6+i, ::_ps]), color='tomato',    lw=1.2, ls='--', label='EKF')
-        axes_e3[i].set_ylabel(lbl); axes_e3[i].grid(True)
-        if i == 0: axes_e3[i].legend(loc='upper right')
+        ax.plot(t_p, np.degrees(X_ekf[6+i, ::_ps]), color='tomato',    lw=1.2, ls='--', zorder=4, label='EKF')
+        ax.plot(t_p, np.degrees(_truth_ang),         color='steelblue', lw=1.5,          zorder=3, label='Truth')
+        ax.set_ylabel(lbl); ax.grid(True)
+        if i == 0: ax.legend(loc='upper right', fontsize=8)
     axes_e3[-1].set_xlabel("Time  [s]")
     for ax in fig_e3.axes: ax.tick_params(labelbottom=True)
     fig_e3.tight_layout()
 
-    # Figure EKF-4: Body rates
+    # Figure EKF-4: Body rates  (no slow-sensor dots — gyro corrects every step)
     fig_e4, axes_e4 = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
     fig_e4.suptitle("EKF: Body Rates  --  Truth vs Estimate", fontsize=13)
     for i, lbl in enumerate(['p  [rad/s]', 'q  [rad/s]', 'r  [rad/s]']):
-        axes_e4[i].plot(t_p, X_p[9+i],          color='steelblue', lw=1.5, label='Truth')
-        axes_e4[i].plot(t_p, X_ekf[9+i, ::_ps], color='tomato',    lw=1.2, ls='--', label='EKF')
-        axes_e4[i].set_ylabel(lbl); axes_e4[i].grid(True)
-        if i == 0: axes_e4[i].legend(loc='upper right')
+        ax = axes_e4[i]
+        ax.plot(t_p, X_ekf[9+i, ::_ps], color='tomato',    lw=1.2, ls='--', zorder=4, label='EKF')
+        ax.plot(t_p, X_p[9+i],          color='steelblue', lw=1.5,          zorder=3, label='Truth')
+        ax.set_ylabel(lbl); ax.grid(True)
+        if i == 0: ax.legend(loc='upper right', fontsize=8)
     axes_e4[-1].set_xlabel("Time  [s]")
     for ax in fig_e4.axes: ax.tick_params(labelbottom=True)
     fig_e4.tight_layout()

@@ -25,10 +25,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from scipy.integrate import solve_ivp
 import control
-try:
-    from tqdm import tqdm
-except ImportError:
-    tqdm = None
+from tqdm import tqdm
 from Test_time import (air_config, cameras, R_base, R_top, H_air_cyl, H_air_cone,
                        _aerial_timed_waypoints, _turbine_timed_waypoints)
 from aerial_props import C_T as _ap_CT, C_Q as _ap_CQ, D as _ap_D, kT as _ap_kT, kQ as _ap_kQ
@@ -43,7 +40,7 @@ from kalman_SC  import KinematicEKF12
 # ── Trajectory ────────────────────────────────────────────────
 TRAJ_MODE      = "test_time_air"  # "hold" | "custom" | "test_time_air"
 AERIAL_PHASE   = "tower"          # "tower" | "turbine"  (only used when TRAJ_MODE = "test_time_air")
-TRAJ_PCT       = 10              # [1-100] percentage of test_time_air waypoints to use
+TRAJ_PCT       = 100              # [1-100] percentage of test_time_air waypoints to use
                                    # 100 = full path, 25 = first quarter of lawnmower strips
 TRAJ_ACCEL_MAX = 20             # [m/s²] max acceleration for trapezoidal velocity profile
 CORNER_RADIUS  = 0                # [m]    corner-rounding radius at strip ends; 0 = sharp turn
@@ -101,10 +98,10 @@ WIND_PROFILE = np.array([
 
 # ── Output ────────────────────────────────────────────────────
 SAVE_SIM_DATA  = True    # save state data to sim_data_SC.npz (for kalman_SC.py)
-SAVE_PCT       = 20      # % of flight to save (first N%) at full resolution
+SAVE_PCT       = 100      # % of flight to save (first N%) at full resolution
 PLOT_MODE      = "sim"   # "sim" | "root_locus" | "none"
 PLOT_REFERENCE = True    # overlay reference trajectory on position plots
-PLOT_VIBRATION = False   # show vibration frequency envelope (rotor harmonics)
+PLOT_VIBRATION = True   # show vibration frequency envelope (rotor harmonics)
 N_BLADES       = 2       # propeller blade count (for vibration plot)
 
 # ── Timing ────────────────────────────────────────────────────
@@ -116,43 +113,9 @@ SETTLING_THRESHOLD_PCT = 5.0    # [%] band around final value
 
 # ══════════════════════════════════════════════════════════════
 
-_mpc = None
-if OA_MODE != "none":
-    import sys as _sys
-    _sys.modules.pop('obstacle_avoidance', None)
-    import obstacle_avoidance as _oa_mod
-    _obs_list    = _oa_mod.OBSTACLES
-    _obs_Rbase   = _oa_mod.R_BASE
-    _obs_cyl2xyz = _oa_mod._cyl_to_xyz
-    if OA_MODE == "apf_ref":
-        _oa_raw   = _oa_mod.compute_raw_deflection
-        _oa_speed = _oa_mod.compute_speed_scale
-        _oa_tau   = _oa_mod.SMOOTH_TAU
-    elif OA_MODE == "apf":
-        _sys.modules.pop('obstacle_avoidance_apf', None)
-        import obstacle_avoidance_apf as _oa_apf
-        _oa_apf_acc   = _oa_apf.compute_apf_acceleration
-        _oa_apf_speed = _oa_apf.compute_speed_scale
-    elif OA_MODE == "mpc":
-        _sys.modules.pop('mpc_planner', None)
-        from mpc_planner import MPCPlanner
-        _mpc = MPCPlanner(
-            obstacles   = _obs_list,
-            cyl_to_xyz  = _obs_cyl2xyz,
-            use_cyl_ref = True,          # updated to _USE_CYL_REF once defined below
-            dt_sim      = 0.005,
-        )
-        print(f"[MPC] Planner ready  (N={_mpc.N} steps × {_mpc.dt}s = "
-              f"{_mpc.N*_mpc.dt:.1f}s horizon, "
-              f"detect={_mpc.det_steps} fine steps = {_mpc.det_steps*0.005:.1f}s)")
-    print(f"[OA] mode={OA_MODE!r}  {len(_obs_list)} obstacle(s): "
-          + ", ".join(f"r={o['pos'][0]}m θ={o['pos'][1]}° z={o['pos'][2]}m rad={o['radius']}m"
-                      for o in _obs_list))
 
-# linearisation point for root locus (only used when PLOT_MODE = "root_locus")
-LIN_POS   = np.array([0.0, 0.0,  0.0])   # [m]   inertial position
-LIN_EULER = np.array([0.0, 0.0,  0.0])   # [rad] phi, theta, psi  (0 = level hover)
-LIN_VEL   = np.array([0.0, 0.0,  0.0])   # [m/s] inertial velocity (affects drag linearisation)
+# linearisation point for root locus — sourced from geometry.py (shared with pole_placement.py)
+from geometry import LIN_POS, LIN_EULER, LIN_VEL
 
 # --- Vehicle parameters ---
 
@@ -208,6 +171,45 @@ def run_sim(overrides=None, show_plots=True):
         IMPULSES = [(5.0, float(_ov['impulse_force']), 0.0, 0.0, 0.0, 0.0, 0.0)]
         IMPULSE_ENABLED = True
 
+    # ── Obstacle avoidance module — re-imported every run so edits take effect ──
+    import sys as _sys
+    _mpc = None
+    _obs_list = []
+    _obs_Rbase = 0.0
+    _obs_cyl2xyz = None
+    _oa_raw = _oa_speed = _oa_tau = None
+    _oa_apf_acc = _oa_apf_speed = None
+    if OA_MODE != "none":
+        _sys.modules.pop('obstacle_avoidance', None)
+        import obstacle_avoidance as _oa_mod
+        _obs_list    = _oa_mod.OBSTACLES
+        _obs_Rbase   = _oa_mod.R_BASE
+        _obs_cyl2xyz = _oa_mod._cyl_to_xyz
+        if OA_MODE == "apf_ref":
+            _oa_raw   = _oa_mod.compute_raw_deflection
+            _oa_speed = _oa_mod.compute_speed_scale
+            _oa_tau   = _oa_mod.SMOOTH_TAU
+        elif OA_MODE == "apf":
+            _sys.modules.pop('obstacle_avoidance_apf', None)
+            import obstacle_avoidance_apf as _oa_apf
+            _oa_apf_acc   = _oa_apf.compute_apf_acceleration
+            _oa_apf_speed = _oa_apf.compute_speed_scale
+        elif OA_MODE == "mpc":
+            _sys.modules.pop('mpc_planner', None)
+            from mpc_planner import MPCPlanner
+            _mpc = MPCPlanner(
+                obstacles   = _obs_list,
+                cyl_to_xyz  = _obs_cyl2xyz,
+                use_cyl_ref = True,
+                dt_sim      = 0.005,
+            )
+            print(f"[MPC] Planner ready  (N={_mpc.N} steps × {_mpc.dt}s = "
+                  f"{_mpc.N*_mpc.dt:.1f}s horizon, "
+                  f"detect={_mpc.det_steps} fine steps = {_mpc.det_steps*0.005:.1f}s)")
+        print(f"[OA] mode={OA_MODE!r}  {len(_obs_list)} obstacle(s): "
+              + ", ".join(f"r={o['pos'][0]}m θ={o['pos'][1]}° z={o['pos'][2]}m rad={o['radius']}m"
+                          for o in _obs_list))
+
     _step_vis = None   # populated by step-response analysis, used by position plot
 
     class Params:
@@ -235,7 +237,7 @@ def run_sim(overrides=None, show_plots=True):
         ])
         Jr      = 6.0e-5   # [kg·m²] rotor spin inertia
     
-        omega_max = 700.0  # [rad/s] rotor speed limit
+        omega_max = 569.0  # [rad/s] rotor speed limit
     
         @property
         def omega_h(self):
@@ -266,97 +268,25 @@ def run_sim(overrides=None, show_plots=True):
         print(f"  {'w_h':<6}  Hover rotational velocity    {p.omega_h:.2f}   rad/s  ({p.omega_h*60/2/np.pi:.0f} RPM)")
         print("=" * 55)
 
-    # PID gains per mode (inner att bandwidth >> outer pos bandwidth)
-    _gains = {
-        "hold": dict(
-            att_Kp    = np.array([66.9,  132.1, 36.96]),
-            att_Ki    = np.array([0.3,   0.3,   0.1  ]),
-            att_Kd    = np.array([38.55, 71.1,  49.32]),
-            att_i_lim = np.array([10.0,  10.0,  5.0  ]),
-            att_lim   = 0.45,
-            cyl_Kp    = np.array([0.12,  0.15,  0.33 ]),
-            cyl_Ki    = np.array([0.01,  0.01,  0.02 ]),
-            cyl_Kd    = np.array([0.55,  0.63,  1.12 ]),
-            cyl_i_lim = np.array([5.0,   5.0,   10.0 ]),
-        ),
-        "custom": dict(
-            att_Kp    = np.array([66.9,  132.1, 36.96]),
-            att_Ki    = np.array([0.3,   0.3,   0.1  ]),
-            att_Kd    = np.array([38.55, 71.1,  49.32]),
-            att_i_lim = np.array([10.0,  10.0,  5.0  ]),
-            att_lim   = 0.45,
-            cyl_Kp    = np.array([0.244, 0.300, 0.656]),
-            cyl_Ki    = np.array([0.10,  0.10,  0.05 ]),
-            cyl_Kd    = np.array([0.784, 0.904, 1.598]),
-            cyl_i_lim = np.array([30.0,  30.0,  10.0 ]),
-        ),
-        "spiral": dict(
-            att_Kp    = np.array([66.9,  132.1, 36.96]),
-            att_Ki    = np.array([0.3,   0.3,   0.1  ]),
-            att_Kd    = np.array([38.55, 71.1,  49.32]),
-            att_i_lim = np.array([10.0,  10.0,  5.0  ]),
-            att_lim   = 0.45,
-            cyl_Kp    = np.array([0.244, 0.300, 0.656]),
-            cyl_Ki    = np.array([0.02,  0.02,  0.05 ]),
-            cyl_Kd    = np.array([0.784, 0.904, 1.598]),
-            cyl_i_lim = np.array([5.0,   5.0,   10.0 ]),
-        ),
-        # att_Kp/Kd rescaled from old box-hull values by inertia ratio:
-        #   roll I: 0.661/1.791=0.369  pitch I: 1.837/2.687=0.684  yaw I: 2.356/3.693=0.638
-        "lawnmower": dict(
-            att_Kp    = np.array([22.7,  135.5,  25.0 ]),
-            att_Ki    = np.array([0.3,   0.3,    0.1  ]),
-            att_Kd    = np.array([6.8,   31.2,   13.2 ]),
-            att_i_lim = np.array([10.0,  10.0,   5.0  ]),
-            att_lim   = 0.45,
-            cyl_Kp    = np.array([0.15,  0.20,   2.00 ]),
-            cyl_Ki    = np.array([0.02,  0.02,   0.15 ]),
-            cyl_Kd    = np.array([1.272, 1.076,  2.50 ]),
-            cyl_i_lim = np.array([5.0,   5.0,   10.0  ]),
-        ),
-        # Derivative-on-measurement gains for event-triggered waypoint mode.
-        # Kp_z boosted to compensate for removed velocity feedforward (old D term
-        # was implicitly adding Kd*ref_vel as upward thrust).
-        # Kd sized for critical damping: Kd ≈ 2*sqrt(Kp) per axis.
-        # att_Kp/Kd rescaled from old box-hull values by inertia ratio (same as lawnmower).
-        "lawnmower_event": dict(
-            att_Kp    = np.array([22.7,  135.5,  25.0 ]),
-            att_Ki    = np.array([0.3,   0.3,    0.1  ]),
-            att_Kd    = np.array([6.8,   31.2,   13.2 ]),
-            att_i_lim = np.array([10.0,  10.0,   5.0  ]),
-            att_lim   = 0.45,
-            cyl_Kp    = np.array([0.25,  0.30,   1.0  ]),
-            cyl_Ki    = np.array([0.02,  0.02,   0.10 ]),
-            cyl_Kd    = np.array([1.0,   1.1,    2.0  ]),
-            cyl_i_lim = np.array([5.0,   5.0,   10.0  ]),
-        ),
-        # EKF-feedback variant: both inner and outer loops detuned for sensor noise.
-        # Inner att_Kp/Kd halved from lawnmower — EKF theta has ~10-15° residual
-        # error which gets amplified by high gains into destabilising torques.
-        # Outer Kd halved, Kp -30%, Ki near-zero (same reasoning).
-        # att_Kp/Kd rescaled by inertia ratio vs old box-hull geometry:
-        #   roll I: 0.661/1.791=0.369  pitch I: 1.837/2.687=0.684  yaw I: 2.356/3.693=0.638
-        # Without this rescaling the same gains produce 2.7x (roll) / 1.5x (pitch)
-        # more angular acceleration per degree of EKF error, causing oscillation
-        # during the vertical climb once EKF drift accumulates.
-        "lawnmower_ekf": dict(
-            att_Kp    = np.array([11.1,  67.7,   12.8 ]),
-            att_Ki    = np.array([0.1,   0.1,    0.05 ]),
-            att_Kd    = np.array([3.3,   15.1,   6.4  ]),
-            att_i_lim = np.array([5.0,   5.0,    3.0  ]),
-            att_lim   = 0.45,
-            cyl_Kp    = np.array([0.10,  0.14,   1.40 ]),
-            cyl_Ki    = np.array([0.005, 0.005,  0.05 ]),
-            cyl_Kd    = np.array([0.64,  0.54,   1.25 ]),
-            cyl_i_lim = np.array([5.0,   5.0,   10.0  ]),
-        ),
-    }
+    # PID gains — EKF-feedback detuned for sensor noise.
+    # att_Kp/Kd rescaled from old box-hull values by inertia ratio:
+    #   roll I: 0.661/1.791=0.369  pitch I: 1.837/2.687=0.684  yaw I: 2.356/3.693=0.638
+    # Inner att_Kp/Kd halved from nominal — EKF theta has ~10-15° residual error which
+    # gets amplified by high gains into destabilising torques during vertical climb.
+    # Without rescaling: 2.7x (roll) / 1.5x (pitch) excess angular accel per deg of EKF error.
+    _g = dict(
+        att_Kp    = np.array([11.1,  67.7,   12.8 ]),
+        att_Ki    = np.array([0.1,   0.1,    0.05 ]),
+        att_Kd    = np.array([3.3,   15.1,   6.4  ]),
+        att_i_lim = np.array([5.0,   5.0,    3.0  ]),
+        att_lim   = 0.45,
+        cyl_Kp    = np.array([0.10,  0.14,   1.40 ]),
+        cyl_Ki    = np.array([0.005, 0.005,  0.05 ]),
+        cyl_Kd    = np.array([0.64,  0.54,   1.25 ]),
+        cyl_i_lim = np.array([5.0,   5.0,   10.0  ]),
+    )
 
-    # pick the right gain set
-    _flight_mode = air_config["flight_mode"] if TRAJ_MODE == "test_time_air" else TRAJ_MODE
-    if USE_EKF and (_flight_mode + "_ekf") in _gains:
-        _flight_mode = _flight_mode + "_ekf"
-    _g = _gains.get(_flight_mode, _gains["custom"])
+ 
 
     att_Kp    = _g["att_Kp"]
     att_Ki    = _g["att_Ki"]
@@ -369,7 +299,7 @@ def run_sim(overrides=None, show_plots=True):
     cyl_Kd    = _g["cyl_Kd"]
     cyl_i_lim = _g["cyl_i_lim"]
 
-    print(f"PID gains       : {_flight_mode} set")
+    print(f"PID gains       : lawnmower_ekf set")
 
     # A_mix @ [w1^2 w2^2 w3^2 w4^2] = [T, tau_phi, tau_theta, tau_psi]
     # X config, arms at 45 deg, tower between FL(1) and FR(2):
@@ -713,12 +643,14 @@ def run_sim(overrides=None, show_plots=True):
     int_att = np.zeros(3)
     int_pos = np.zeros(3)
 
-    U_log    = np.zeros((4, N))   # [T, τ_φ, τ_θ, τ_ψ]
-    Wr_log   = np.zeros((4, N))   # commanded rotor speeds
-    Ref_log  = np.zeros((3, N))   # event-triggered reference position logged at each step
+    U_log        = np.zeros((4, N))   # [T, τ_φ, τ_θ, τ_ψ]
+    Wr_log       = np.zeros((4, N))   # commanded rotor speeds
+    Ref_log      = np.zeros((3, N))   # event-triggered reference position logged at each step
+    Ref_vel_log  = np.zeros((3, N))   # event-triggered reference velocity logged at each step
 
     k_ref    = 0              # event-triggered reference pointer
     _oa_defl = np.zeros(3)    # smoothed reference deflection [x,y,z] (apf_ref only)
+    APF_defl_log = np.zeros((3, N))   # per-step APF deflection vector (apf_ref only)
     if OA_MODE != "none":
         _oa_min_dist = [np.inf] * len(_obs_list)   # min surface distance per obstacle
     _t_complete = None     # sim time when drone first reaches last trajectory waypoint
@@ -774,7 +706,10 @@ def run_sim(overrides=None, show_plots=True):
                     abs(np.arctan2(np.sin(_th_m - ref_pos[1, k_ref]),
                                    np.cos(_th_m - ref_pos[1, k_ref]))) < EVENT_TH_TOL and
                     abs(c_pos[2] - ref_pos[2, k_ref]) < EVENT_Z_TOL):
+                    # log achievement error before advancing: how far from the waypoint at trigger time
                     k_ref += 1
+        elif not _USE_CYL_REF:
+            k_ref = k   # Cartesian custom mode: reference is time-indexed, follow lockstep
         if _t_complete is None and TRAJ_MODE == "test_time_air":
             _d_last = np.sqrt((pos[0]-_lw_x)**2 + (pos[1]-_lw_y)**2 + (pos[2]-_lw_z)**2)
             if _d_last < _COMPLETE_RADIUS:
@@ -789,6 +724,11 @@ def run_sim(overrides=None, show_plots=True):
             _rv = ref_vel[:, k_ref]
         _ra = ref_acc[:, k_ref]
         _ry = ref_yaw[  k_ref]
+        # Cartesian setpoint mode: gradient-of-step gives useless 1000 m/s spikes —
+        # zero them out so only the PD position error drives the controller.
+        if not _USE_CYL_REF:
+            _rv = np.zeros(3)
+            _ra = np.zeros(3)
 
         if OA_MODE == "apf_ref":
             # ── Reference deflection (both modes) ────────────────────────────────
@@ -809,6 +749,7 @@ def run_sim(overrides=None, show_plots=True):
                                else _oa_tau * 0.25
             _alpha      = dt / (dt + _tau_eff)
             _oa_defl    = _oa_defl + _alpha * (_raw - _oa_defl)
+            APF_defl_log[:, k] = _oa_defl
             _rp_xyz_mod = _rp_xyz + _oa_defl
             if _USE_CYL_REF:
                 _r_mod = max(np.sqrt(_rp_xyz_mod[0]**2 + _rp_xyz_mod[1]**2), 1e-6)
@@ -832,7 +773,8 @@ def run_sim(overrides=None, show_plots=True):
                 if _ds < _oa_min_dist[_oi]:
                     _oa_min_dist[_oi] = _ds
 
-        Ref_log[:, k] = _rp   # log active reference position
+        Ref_log[:, k]     = _rp               # log active reference position
+        Ref_vel_log[:, k] = ref_vel[:, k_ref]  # log active reference velocity
 
         # outer PID + feedforward
         if _USE_CYL_REF:
@@ -950,7 +892,9 @@ def run_sim(overrides=None, show_plots=True):
     X       = X      [:, :_n_valid]
     U_log   = U_log  [:, :_n_valid]
     Wr_log  = Wr_log [:, :_n_valid]
-    Ref_log = Ref_log[:, :_n_valid]
+    Ref_log     = Ref_log[:, :_n_valid]
+    Ref_vel_log = Ref_vel_log[:, :_n_valid]
+    APF_defl_log = APF_defl_log[:, :_n_valid]
     ref_pos = ref_pos[:, :_n_valid]
     ref_vel = ref_vel[:, :_n_valid]
     ref_acc = ref_acc[:, :_n_valid]
@@ -1031,18 +975,14 @@ def run_sim(overrides=None, show_plots=True):
         return (1.0 / (2.0 * wh)) * np.linalg.inv(A_mix) @ Kv
 
     # convert cylindrical ref to Cartesian for plots
+    # ref_pos_cart: what the controller actually commanded at each step (from Ref_log)
     if _USE_CYL_REF:
-        _r  = ref_pos[0];  _θ = ref_pos[1]
-        _ṙ  = ref_vel[0];  _θ̇ = ref_vel[1]
+        _r  = Ref_log[0];  _θ = Ref_log[1]
         ref_pos_cart = np.array([_r * np.cos(_θ),
                                   _r * np.sin(_θ),
-                                  ref_pos[2]])
-        ref_vel_cart = np.array([_ṙ * np.cos(_θ) - _r * _θ̇ * np.sin(_θ),
-                                  _ṙ * np.sin(_θ) + _r * _θ̇ * np.cos(_θ),
-                                  ref_vel[2]])
+                                  Ref_log[2]])
     else:
-        ref_pos_cart = ref_pos
-        ref_vel_cart = ref_vel
+        ref_pos_cart = Ref_log
 
     # --- analysis output ---
 
@@ -1170,55 +1110,43 @@ def run_sim(overrides=None, show_plots=True):
         print(f"\n{'═'*56}")
         print(f"  Total inspection time (SC): {_insp_label}")
         print(f"{'═'*56}")
-        print(f"\n{'═'*56}")
-        print("TRACKING ERROR SUMMARY")
-        print(f"{'═'*56}")
-        if _USE_CYL_REF:
-            _r_m  = np.maximum(np.sqrt(X[0]**2 + X[1]**2), 1e-6)
-            _θ_m  = np.arctan2(X[1], X[0])
-            _er   = ref_pos[0] - _r_m
-            _eθ   = np.arctan2(np.sin(ref_pos[1] - _θ_m), np.cos(ref_pos[1] - _θ_m))
-            _ez   = ref_pos[2] - X[2]
-            _ṙ_m  =  X[6]*np.cos(_θ_m) + X[7]*np.sin(_θ_m)
-            _θ̇_m  = (-X[6]*np.sin(_θ_m) + X[7]*np.cos(_θ_m)) / _r_m
-            _eṙ   = ref_vel[0] - _ṙ_m
-            _eθ̇   = ref_vel[1] - _θ̇_m
-            _eż   = ref_vel[2] - X[8]
-            print(f"  {'':12s}  {'mean':>10s}   {'max':>10s}")
-            print(f"  {'─'*38}")
-            print(f"  pos r     :  {np.abs(_er).mean():>10.3f} m    {np.abs(_er).max():>10.3f} m")
-            print(f"  pos θ     :  {np.abs(_eθ).mean():>10.4f} rad  {np.abs(_eθ).max():>10.4f} rad")
-            print(f"  pos z     :  {np.abs(_ez).mean():>10.3f} m    {np.abs(_ez).max():>10.3f} m")
-            print(f"  {'─'*38}")
-            print(f"  vel ṙ     :  {np.abs(_eṙ).mean():>10.3f} m/s  {np.abs(_eṙ).max():>10.3f} m/s")
-            print(f"  vel θ̇     :  {np.abs(_eθ̇).mean():>10.4f} r/s  {np.abs(_eθ̇).max():>10.4f} r/s")
-            print(f"  vel ż     :  {np.abs(_eż).mean():>10.3f} m/s  {np.abs(_eż).max():>10.3f} m/s")
-            if USE_EVENT_TRIG:
-                # event-triggered error: drone vs the reference the controller actually saw
-                _ev_r_m  = np.maximum(np.sqrt(X[0]**2 + X[1]**2), 1e-6)
-                _ev_θ_m  = np.arctan2(X[1], X[0])
-                _ev_er   = Ref_log[0] - _ev_r_m
-                _ev_eθ   = np.arctan2(np.sin(Ref_log[1] - _ev_θ_m), np.cos(Ref_log[1] - _ev_θ_m))
-                _ev_ez   = Ref_log[2] - X[2]
-                print(f"\n  (event-triggered reference — what controller actually tracked)")
-                print(f"  {'─'*38}")
-                print(f"  pos r     :  {np.abs(_ev_er).mean():>10.3f} m    {np.abs(_ev_er).max():>10.3f} m")
-                print(f"  pos θ     :  {np.abs(_ev_eθ).mean():>10.4f} rad  {np.abs(_ev_eθ).max():>10.4f} rad")
-                print(f"  pos z     :  {np.abs(_ev_ez).mean():>10.3f} m    {np.abs(_ev_ez).max():>10.3f} m")
-        else:
-            _ep = ref_pos_cart - X[0:3]
-            _ev = ref_vel_cart - X[6:9]
-            print(f"  {'':12s}  {'mean':>10s}   {'max':>10s}")
-            print(f"  {'─'*38}")
-            print(f"  pos x     :  {np.abs(_ep[0]).mean():>10.3f} m    {np.abs(_ep[0]).max():>10.3f} m")
-            print(f"  pos y     :  {np.abs(_ep[1]).mean():>10.3f} m    {np.abs(_ep[1]).max():>10.3f} m")
-            print(f"  pos z     :  {np.abs(_ep[2]).mean():>10.3f} m    {np.abs(_ep[2]).max():>10.3f} m")
-            print(f"  {'─'*38}")
-            print(f"  vel x     :  {np.abs(_ev[0]).mean():>10.3f} m/s  {np.abs(_ev[0]).max():>10.3f} m/s")
-            print(f"  vel y     :  {np.abs(_ev[1]).mean():>10.3f} m/s  {np.abs(_ev[1]).max():>10.3f} m/s")
-            print(f"  vel z     :  {np.abs(_ev[2]).mean():>10.3f} m/s  {np.abs(_ev[2]).max():>10.3f} m/s")
 
     if PLOT_MODE == "sim" and TRAJ_MODE == "test_time_air":
+        # ── Scan quality metric ─────────────────────────────────────────────
+        # Lateral deviation during vertical scan segments only (z changes between
+        # consecutive waypoints). Filter by time so points from other strips
+        # (which share the same z-range) are not included.
+        # Waypoints: _wp[:, 0]=t  [1]=r  [2]=theta  [3]=z  (cylindrical)
+        _wp_x = _wp[:, 1] * np.cos(_wp[:, 2])
+        _wp_y_arr = _wp[:, 1] * np.sin(_wp[:, 2])
+        _wp_z_arr = _wp[:, 3]
+        _wp_t_arr = _wp[:, 0]
+        _true_x = X[0, :_n_valid]
+        _true_y = X[1, :_n_valid]
+        _true_t = t[:_n_valid]
+        _scan_errors = []
+        for _si in range(len(_wp_x) - 1):
+            if abs(_wp_z_arr[_si + 1] - _wp_z_arr[_si]) < 1e-3:
+                continue   # horizontal segment — skip
+            _xr, _yr = _wp_x[_si], _wp_y_arr[_si]
+            _mask = (_true_t >= _wp_t_arr[_si]) & (_true_t <= _wp_t_arr[_si + 1])
+            if not _mask.any():
+                continue
+            _scan_errors.append(np.sqrt((_true_x[_mask] - _xr)**2 + (_true_y[_mask] - _yr)**2))
+        print(f"\n{'═'*56}")
+        print("  SCAN QUALITY  (lateral deviation, vertical strips only)")
+        print(f"{'═'*56}")
+        if _scan_errors:
+            _all_err = np.concatenate(_scan_errors)
+            print(f"  {'Scan segments':<34}  {len(_scan_errors)}")
+            print(f"  {'Points evaluated':<34}  {len(_all_err)}")
+            print(f"  {'Mean lateral error':<34}  {np.mean(_all_err)*1e2:.2f} cm")
+            print(f"  {'Max  lateral error':<34}  {np.max(_all_err)*1e2:.2f} cm")
+            print(f"  {'Min  lateral error':<34}  {np.min(_all_err)*1e2:.2f} cm")
+        else:
+            print("  No vertical scan segments found in waypoints.")
+        print(f"{'═'*56}")
+
         # rotor ceiling requirements
         def _rpm_sc(w): return w * 60.0 / (2.0 * np.pi)
 
@@ -1302,7 +1230,7 @@ def run_sim(overrides=None, show_plots=True):
 
         fig_rl = plt.figure(figsize=(20, 13))
         fig_rl.suptitle(
-            f"Sequential closed-loop pole analysis  —  gains: '{_flight_mode}'  |  Ki omitted",
+            f"Sequential closed-loop pole analysis  —  gains: 'lawnmower_ekf'  |  Ki omitted",
             fontsize=12, fontweight='bold')
 
         ax_in  = fig_rl.add_axes([0.06, 0.42, 0.40, 0.50])
@@ -1445,7 +1373,6 @@ def run_sim(overrides=None, show_plots=True):
         t_p        = t[::_ps]
         X_p        = _zclip(X[:, ::_ps])
         rp_p       = _zclip(ref_pos_cart[:, ::_ps])
-        rv_p       = _zclip(ref_vel_cart[:, ::_ps])
         Ul_p       = _zclip(U_log[:, ::_ps])
         ref_yaw_p  = _zclip(ref_yaw[::_ps])
 
@@ -1457,15 +1384,8 @@ def run_sim(overrides=None, show_plots=True):
             _vθ_p = (-X_p[6,:]*np.sin(_θ_p) + X_p[7,:]*np.cos(_θ_p)) / _r_p
             _vz_p =  X_p[8,:]
 
-            _rr_p  = ref_pos[0, ::_ps];  _θr_p = ref_pos[1, ::_ps];  _zr_p = ref_pos[2, ::_ps]
-            _vr_r  = ref_vel[0, ::_ps];  _vθ_r = ref_vel[1, ::_ps];  _vz_r = ref_vel[2, ::_ps]
-
-            _er_p  = _rr_p - _r_p
-            _eθ_p  = np.arctan2(np.sin(_θr_p - _θ_p), np.cos(_θr_p - _θ_p))
-            _ez_p  = _zr_p - _z_p
-            _evr_p = _vr_r - _vr_p
-            _evθ_p = _vθ_r - _vθ_p
-            _evz_p = _vz_r - _vz_p
+            _rr_p  = Ref_log[0, ::_ps];     _θr_p = Ref_log[1, ::_ps];     _zr_p = Ref_log[2, ::_ps]
+            _vr_r  = Ref_vel_log[0, ::_ps]; _vθ_r = Ref_vel_log[1, ::_ps]; _vz_r = Ref_vel_log[2, ::_ps]
 
         gc = (0.85, 0.95, 0.85)   # gust window shading colour
 
@@ -1542,7 +1462,7 @@ def run_sim(overrides=None, show_plots=True):
         else:
             vel_labels  = ['vx  [m/s]', 'vy  [m/s]', 'vz  [m/s]']
             vel_actual  = [X_p[6,:], X_p[7,:], X_p[8,:]]
-            vel_ref     = [rv_p[0,:], rv_p[1,:], rv_p[2,:]]
+            vel_ref     = [Ref_vel_log[0, ::_ps], Ref_vel_log[1, ::_ps], Ref_vel_log[2, ::_ps]]
 
         for i in range(3):
             ax = axes2[i]
@@ -1558,36 +1478,7 @@ def run_sim(overrides=None, show_plots=True):
         for ax in fig2.axes: ax.tick_params(labelbottom=True)
         fig2.tight_layout()
 
-        if _USE_CYL_REF:
-            fig2b, axes2b = plt.subplots(3, 2, figsize=(13, 8), sharex=True)
-            fig2b.suptitle(f"Cylindrical Tracking Errors  [{TRAJ_MODE}]", fontsize=13)
-
-            pos_err_data = [(_er_p,  'e_r  [m]',      'Standoff error'),
-                            (_eθ_p,  'e_θ  [rad]',     'Azimuth error'),
-                            (_ez_p,  'e_z  [m]',       'Height error')]
-            vel_err_data = [(_evr_p, 'e_ṙ  [m/s]',    'Radial vel error'),
-                            (_evθ_p, 'e_θ̇  [rad/s]',  'Angular vel error'),
-                            (_evz_p, 'e_ż  [m/s]',    'Vertical vel error')]
-
-            for i, ((pe, pl, pt), (ve, vl, vt)) in enumerate(zip(pos_err_data, vel_err_data)):
-                ax = axes2b[i, 0]
-                ax.plot(t_p, pe, 'b', lw=1.6)
-                ax.axhline(0, color='k', ls=':', lw=0.8)
-                ax.set_ylabel(pl); ax.grid(True)
-                shade_gusts(ax)
-                if i == 0: ax.set_title("Position error  (ref − actual)")
-
-                ax = axes2b[i, 1]
-                ax.plot(t_p, ve, 'darkorange', lw=1.6)
-                ax.axhline(0, color='k', ls=':', lw=0.8)
-                ax.set_ylabel(vl); ax.grid(True)
-                shade_gusts(ax)
-                if i == 0: ax.set_title("Velocity error  (ref − actual)")
-
-            axes2b[2, 0].set_xlabel("Time  [s]")
-            axes2b[2, 1].set_xlabel("Time  [s]")
-            for ax in fig2b.axes: ax.tick_params(labelbottom=True)
-            fig2b.tight_layout()
+        # error figure placeholder — error metric to be defined
 
         fig3, axes3 = plt.subplots(4, 1, figsize=(9, 10), sharex=True)
         fig3.suptitle("Virtual Control Inputs", fontsize=13)
@@ -1804,6 +1695,18 @@ def run_sim(overrides=None, show_plots=True):
                      color='red', lw=1.8, ls='--', label='Reference', zorder=5)
         ax6.plot(X_p[0, :], X_p[1, :], X_p[2, :],
                  color='blue', lw=1.8, label='Actual (controller)', zorder=6)
+
+        if OA_MODE == "apf_ref":
+            # smooth planned ref in Cartesian + per-step APF deflection offset
+            _ps_d = X_p.shape[1]  # same downsample length as X_p
+            _ds = max(1, X.shape[1] // _ps_d)
+            _rp_s = ref_pos[0, ::_ds];  _th_s = ref_pos[1, ::_ds];  _z_s = ref_pos[2, ::_ds]
+            _defl_s = APF_defl_log[:, ::_ds]
+            _apf_x = _rp_s * np.cos(_th_s) + _defl_s[0]
+            _apf_y = _rp_s * np.sin(_th_s) + _defl_s[1]
+            _apf_z = _z_s                  + _defl_s[2]
+            ax6.plot(_apf_x[:_ps_d], _apf_y[:_ps_d], _apf_z[:_ps_d],
+                     color='purple', lw=1.5, ls=':', label='APF-deflected reference', zorder=7)
 
         # start / end markers on actual path
         ax6.scatter(*X_p[:3,  0], color='green',  s=40, zorder=7)

@@ -27,10 +27,7 @@ Dependencies: numpy matplotlib tqdm
 
 import numpy as np
 import matplotlib.pyplot as plt
-try:
-    from tqdm import tqdm
-except ImportError:
-    tqdm = None
+from tqdm import tqdm
 
 from geometry import (
     L_box, W_box, H_box,
@@ -52,7 +49,7 @@ from Test_time import (
 # ─────────────────────────────────────────────────────────────────────
 
 TRAJ_MODE = "test_time_water"
-TRAJ_PCT  = 20   # [1-100] percentage of test_time_water waypoints to use
+TRAJ_PCT  = 10   # [1-100] percentage of test_time_water waypoints to use
 #   "hold"            -- hold at origin
 #   "custom"          -- cylindrical (r, θ, z) segments (list of tuples)
 #   "test_time_water" -- full underwater lawnmower from water_config
@@ -266,73 +263,27 @@ def run_sim(overrides=None, show_plots=True):
     #  PID GAINS PER MODE
     # ─────────────────────────────────────────────────────────────────────
 
-    _gains_uw = {
-        # EKF-feedback variant.
-        # INNER detuned ~50%: UW plant runs at 20 Hz so the 1-step EKF delay is 50 ms
-        # (vs 5 ms in SC). Phase lag at crossover = ω·0.05 rad → keep crossover below
-        # ~6 rad/s (1 Hz) for 45° margin, requiring roughly half the nominal bandwidth.
-        # OUTER detuned: transponder at 5 Hz (vs GNSS 50 Hz), noisier position fix.
-        "lawnmower_ekf": dict(
-            att_Kp    = np.array([10.22,  9.90, 21.07]),
-            att_Ki    = np.array([ 0.03,  0.03,  0.03]),
-            att_Kd    = np.array([ 2.943, 7.06, 10.00]),
-            att_i_lim = np.array([2.0,   2.0,   2.0]),
-            att_lim   = 0.25,
-            cyl_Kp    = np.array([0.224, 0.55, 0.436]),
-            cyl_Ki    = np.array([0.002, 0.002, 0.006]),
-            cyl_Kd    = np.array([0.60, 0.968, 1.382]),
-            cyl_i_lim = np.array([3.0,  3.0,  8.0]),
-        ),
-        "hold": dict(
-            att_Kp=np.array([36.0, 87.0,  48.0]), att_Ki=np.array([0.2, 0.2, 0.1]),
-            att_Kd=np.array([22.0, 52.0,  43.0]), att_i_lim=np.array([10.0, 10.0, 5.0]),
-            att_lim=0.30,
-            cyl_Kp=np.array([0.30, 0.30, 0.20]), cyl_Ki=np.array([0.01, 0.01, 0.02]),
-            cyl_Kd=np.array([1.00, 1.00, 0.80]), cyl_i_lim=np.array([5.0, 5.0, 10.0]),
-        ),
-        "custom": dict(
-            att_Kp=np.array([36.0, 87.0,  48.0]), att_Ki=np.array([0.2, 0.2, 0.1]),
-            att_Kd=np.array([22.0, 52.0,  43.0]), att_i_lim=np.array([10.0, 10.0, 5.0]),
-            att_lim=0.30,
-            cyl_Kp=np.array([0.60, 0.60, 0.30]), cyl_Ki=np.array([0.02, 0.02, 0.05]),
-            cyl_Kd=np.array([1.40, 1.40, 0.90]), cyl_i_lim=np.array([5.0, 5.0, 10.0]),
-        ),
-        "lawnmower": dict(
-            # Inner loop: attitude stabilisation via vectoring thrusters + servos (tau_srv=0.10 s lag).
-            # phi/theta bandwidth kept moderate — attitude errors are small (buoyancy keeps vehicle level).
-            # psi bandwidth higher: yaw authority is good via horizontal allocation.
-            att_Kp    = np.array([25.0,  60.0,  80.0]),
-            att_Ki    = np.array([ 0.1,   0.1,   0.1]),
-            att_Kd    = np.array([ 8.0,  20.0,  30.0]),
-            att_i_lim = np.array([5.0,   5.0,   5.0]),
-            att_lim   = 0.25,
-            # Outer loop: position tracking in cylindrical coords.
-            # z gains boosted — vertical is the primary lawnmower axis; added mass in z is 25% so
-            # effective mass ~1.25 m. r and tangential gains moderate; y added mass is 40%.
-            cyl_Kp    = np.array([0.40, 0.40, 0.60]),
-            cyl_Ki    = np.array([0.01, 0.01, 0.03]),
-            cyl_Kd    = np.array([1.20, 1.20, 1.80]),
-            cyl_i_lim = np.array([3.0,  3.0,  8.0]),
-        ),
-        "spiral": dict(
-            att_Kp=np.array([36.0, 87.0,  48.0]), att_Ki=np.array([0.2, 0.2, 0.1]),
-            att_Kd=np.array([22.0, 52.0,  43.0]), att_i_lim=np.array([10.0, 10.0, 5.0]),
-            att_lim=0.30,
-            cyl_Kp=np.array([0.80, 0.80, 0.40]), cyl_Ki=np.array([0.02, 0.02, 0.05]),
-            cyl_Kd=np.array([1.60, 1.60, 1.10]), cyl_i_lim=np.array([5.0, 5.0, 10.0]),
-        ),
-    }
-
-    _flight_mode = water_config["flight_mode"] if TRAJ_MODE == "test_time_water" else TRAJ_MODE
-    if USE_EKF and (_flight_mode + "_ekf") in _gains_uw:
-        _flight_mode = _flight_mode + "_ekf"
-    _g = _gains_uw.get(_flight_mode, _gains_uw["lawnmower"])
+    # PID gains — EKF-feedback detuned for sensor noise.
+    # Inner ~50% detuned: 20 Hz plant → 50 ms EKF delay → phase lag ω·0.05 rad,
+    # keep crossover below ~6 rad/s for 45° margin.
+    # Outer detuned: transponder at 5 Hz (vs GNSS 50 Hz), noisier position fix.
+    _g = dict(
+        att_Kp    = np.array([10.22,  9.90, 21.07]),
+        att_Ki    = np.array([ 0.03,  0.03,  0.03]),
+        att_Kd    = np.array([ 2.943, 7.06, 10.00]),
+        att_i_lim = np.array([2.0,   2.0,   2.0]),
+        att_lim   = 0.25,
+        cyl_Kp    = np.array([0.224, 0.55, 0.436]),
+        cyl_Ki    = np.array([0.002, 0.002, 0.006]),
+        cyl_Kd    = np.array([0.60, 0.968, 1.382]),
+        cyl_i_lim = np.array([3.0,  3.0,  8.0]),
+    )
 
     att_Kp = _g["att_Kp"];  att_Ki = _g["att_Ki"];  att_Kd = _g["att_Kd"]
     att_i_lim = _g["att_i_lim"];  att_lim = _g["att_lim"]
     cyl_Kp = _g["cyl_Kp"];  cyl_Ki = _g["cyl_Ki"];  cyl_Kd = _g["cyl_Kd"]
     cyl_i_lim = _g["cyl_i_lim"]
-    print(f"PID gains : {_flight_mode} (UW)")
+    print(f"PID gains : lawnmower_ekf (UW)")
 
     # ─────────────────────────────────────────────────────────────────────
     #  TRAJECTORY BUILDERS
@@ -620,7 +571,8 @@ def run_sim(overrides=None, show_plots=True):
     Wr_log   = np.zeros((4,  N))
     Beta_log = np.zeros((4,  N))
     U_log    = np.zeros((6,  N))   # virtual wrench [Fx,Fy,Fz, τx,τy,τz]
-    Ref_log  = np.zeros((3,  N))   # active cylindrical ref per step
+    Ref_log      = np.zeros((3, N))   # active cylindrical ref per step
+    Ref_vel_log  = np.zeros((3, N))   # active cylindrical ref velocity per step
     X_ekf    = np.zeros((12, N)) if ENABLE_EKF else None
 
     if x0_override is not None:
@@ -697,7 +649,8 @@ def run_sim(overrides=None, show_plots=True):
             if _d_last < _COMPLETE_RADIUS:
                 _t_complete = t[k]
         kr = k_ref if (USE_EVENT_TRIG and _USE_CYL_REF) else k
-        Ref_log[:, k] = ref_pos[:, kr]
+        Ref_log[:, k]     = ref_pos[:, kr]
+        Ref_vel_log[:, k] = ref_vel[:, kr]
 
         R_cur = rot_ZYX(c_phi, c_theta, c_psi)
 
@@ -774,7 +727,8 @@ def run_sim(overrides=None, show_plots=True):
     U_log    = U_log   [:, :_n_valid]
     Wr_log   = Wr_log  [:, :_n_valid]
     Beta_log = Beta_log[:, :_n_valid]
-    Ref_log  = Ref_log [:, :_n_valid]
+    Ref_log     = Ref_log    [:, :_n_valid]
+    Ref_vel_log = Ref_vel_log[:, :_n_valid]
     ref_pos  = ref_pos [:, :_n_valid]
     ref_vel  = ref_vel [:, :_n_valid]
     ref_acc  = ref_acc [:, :_n_valid]
@@ -862,15 +816,12 @@ def run_sim(overrides=None, show_plots=True):
         return np.vstack([J_wr, J_beta]) @ Kv   # (8×20)
 
 
-    # Cylindrical → Cartesian for plots / error summary
+    # ref_pos_cart: what the controller actually commanded at each step (from Ref_log)
     if _USE_CYL_REF:
-        _r, _th   = ref_pos[0], ref_pos[1]
-        _vr, _vth = ref_vel[0], ref_vel[1]
-        ref_pos_cart = np.array([_r*np.cos(_th), _r*np.sin(_th), ref_pos[2]])
-        ref_vel_cart = np.array([_vr*np.cos(_th) - _r*_vth*np.sin(_th),
-                                  _vr*np.sin(_th) + _r*_vth*np.cos(_th), ref_vel[2]])
+        _r, _th = Ref_log[0], Ref_log[1]
+        ref_pos_cart = np.array([_r*np.cos(_th), _r*np.sin(_th), Ref_log[2]])
     else:
-        ref_pos_cart = ref_pos;  ref_vel_cart = ref_vel
+        ref_pos_cart = Ref_log
 
     # ─────────────────────────────────────────────────────────────────────
     #  ANALYSIS OUTPUT
@@ -884,43 +835,43 @@ def run_sim(overrides=None, show_plots=True):
         print(f"\n{'═'*56}")
         print(f"  Total inspection time (UW): {_insp_label}")
         print(f"{'═'*56}")
-        print(f"\n{'═'*56}")
-        print("UNDERWATER TRACKING ERROR SUMMARY")
-        print(f"{'═'*56}")
-        if _USE_CYL_REF:
-            _rm  = np.maximum(np.sqrt(X[0]**2 + X[1]**2), 1e-6)
-            _thm = np.arctan2(X[1], X[0])
-            _er  = ref_pos[0] - _rm
-            _eth = np.arctan2(np.sin(ref_pos[1] - _thm), np.cos(ref_pos[1] - _thm))
-            _ez  = ref_pos[2] - X[2]
-            _vr_m  =  X[6]*np.cos(_thm) + X[7]*np.sin(_thm)
-            _vth_m = (-X[6]*np.sin(_thm) + X[7]*np.cos(_thm)) / _rm
-            _evr = ref_vel[0] - _vr_m;  _evz = ref_vel[2] - X[8]
-            print(f"  {'':12s}  {'mean':>10s}   {'max':>10s}")
-            print(f"  {'─'*38}")
-            print(f"  pos r     :  {np.abs(_er).mean():>10.3f} m    {np.abs(_er).max():>10.3f} m")
-            print(f"  pos theta :  {np.abs(_eth).mean():>10.4f} rad  {np.abs(_eth).max():>10.4f} rad")
-            print(f"  pos z     :  {np.abs(_ez).mean():>10.3f} m    {np.abs(_ez).max():>10.3f} m")
-            print(f"  {'─'*38}")
-            print(f"  vel r     :  {np.abs(_evr).mean():>10.3f} m/s  {np.abs(_evr).max():>10.3f} m/s")
-            print(f"  vel z     :  {np.abs(_evz).mean():>10.3f} m/s  {np.abs(_evz).max():>10.3f} m/s")
-            if USE_EVENT_TRIG:
-                _ev_rm  = np.maximum(np.sqrt(X[0]**2 + X[1]**2), 1e-6)
-                _ev_thm = np.arctan2(X[1], X[0])
-                _ev_er  = Ref_log[0] - _ev_rm
-                _ev_eth = np.arctan2(np.sin(Ref_log[1] - _ev_thm), np.cos(Ref_log[1] - _ev_thm))
-                _ev_ez  = Ref_log[2] - X[2]
-                print(f"\n  (event-triggered reference)")
-                print(f"  {'─'*38}")
-                print(f"  pos r     :  {np.abs(_ev_er).mean():>10.3f} m    {np.abs(_ev_er).max():>10.3f} m")
-                print(f"  pos theta :  {np.abs(_ev_eth).mean():>10.4f} rad  {np.abs(_ev_eth).max():>10.4f} rad")
-                print(f"  pos z     :  {np.abs(_ev_ez).mean():>10.3f} m    {np.abs(_ev_ez).max():>10.3f} m")
-        else:
-            _ep = ref_pos_cart - X[0:3]
-            for i, ax in enumerate(['x', 'y', 'z']):
-                print(f"  pos {ax}     :  {np.abs(_ep[i]).mean():>10.3f} m    {np.abs(_ep[i]).max():>10.3f} m")
+        # error metric placeholder — to be defined
 
         if TRAJ_MODE == "test_time_water":
+            # ── Scan quality metric ──────────────────────────────────────
+            # Lateral deviation during vertical scan segments only.
+            # Filter by time so points from other strips (same z-range) are excluded.
+            # Waypoints: _wp_pre[:, 0]=t  [1]=r  [2]=theta  [3]=z
+            _wp_x  = _wp_pre[:, 1] * np.cos(_wp_pre[:, 2])
+            _wp_y_arr = _wp_pre[:, 1] * np.sin(_wp_pre[:, 2])
+            _wp_z_arr = _wp_pre[:, 3]
+            _wp_t_arr = _wp_pre[:, 0]
+            _true_x = X[0, :_n_valid]
+            _true_y = X[1, :_n_valid]
+            _true_t = t[:_n_valid]
+            _scan_errors = []
+            for _si in range(len(_wp_x) - 1):
+                if abs(_wp_z_arr[_si + 1] - _wp_z_arr[_si]) < 1e-3:
+                    continue   # horizontal segment — skip
+                _xr, _yr = _wp_x[_si], _wp_y_arr[_si]
+                _mask = (_true_t >= _wp_t_arr[_si]) & (_true_t <= _wp_t_arr[_si + 1])
+                if not _mask.any():
+                    continue
+                _scan_errors.append(np.sqrt((_true_x[_mask] - _xr)**2 + (_true_y[_mask] - _yr)**2))
+            print(f"\n{'═'*56}")
+            print("  SCAN QUALITY  (lateral deviation, vertical strips only)")
+            print(f"{'═'*56}")
+            if _scan_errors:
+                _all_err = np.concatenate(_scan_errors)
+                print(f"  {'Scan segments':<34}  {len(_scan_errors)}")
+                print(f"  {'Points evaluated':<34}  {len(_all_err)}")
+                print(f"  {'Mean lateral error':<34}  {np.mean(_all_err)*1e2:.2f} cm")
+                print(f"  {'Max  lateral error':<34}  {np.max(_all_err)*1e2:.2f} cm")
+                print(f"  {'Min  lateral error':<34}  {np.min(_all_err)*1e2:.2f} cm")
+            else:
+                print("  No vertical scan segments found in waypoints.")
+            print(f"{'═'*56}")
+
             def _rpm(w): return abs(w)*60.0/(2.0*np.pi)
             _wr     = X[12:16, :];  _wrc = Wr_log;  _bt = X[16:20, :]
             _wc_peak = float(np.max(np.abs(_wr)));  _bt_rng = float(np.max(_bt)) - float(np.min(_bt))
@@ -963,7 +914,7 @@ def run_sim(overrides=None, show_plots=True):
 
         fig_rl = plt.figure(figsize=(20, 13))
         fig_rl.suptitle(
-            f"UW Sequential closed-loop pole analysis  —  gains: '{_flight_mode}'  "
+            f"UW Sequential closed-loop pole analysis  —  gains: 'lawnmower_ekf'  "
             f"|  depth={LIN_DEPTH} m  |  Ki omitted",
             fontsize=12, fontweight='bold')
 
@@ -1081,7 +1032,7 @@ def run_sim(overrides=None, show_plots=True):
         _ps  = max(1, N // 10_000)
         def _zc(a): return np.where(np.abs(a) < 1e-10, 0.0, a)
         t_p  = t[::_ps];   X_p  = _zc(X[:, ::_ps])
-        rp_p = _zc(ref_pos_cart[:, ::_ps]);  rv_p = _zc(ref_vel_cart[:, ::_ps])
+        rp_p = _zc(ref_pos_cart[:, ::_ps])
         ry_p = _zc(ref_yaw[::_ps])
         Ul_p = _zc(U_log[:, ::_ps]);  Wr_p = _zc(Wr_log[:, ::_ps]);  Bt_p = _zc(Beta_log[:, ::_ps])
 
@@ -1092,11 +1043,8 @@ def run_sim(overrides=None, show_plots=True):
             _vr_p  =  X_p[6]*np.cos(_th_p) + X_p[7]*np.sin(_th_p)
             _vth_p = (-X_p[6]*np.sin(_th_p) + X_p[7]*np.cos(_th_p)) / _r_p
             _vz_p  = X_p[8]
-            _rr_p, _thr_p, _zr_p = ref_pos[0, ::_ps], ref_pos[1, ::_ps], ref_pos[2, ::_ps]
-            _vrr,  _vthr,  _vzr  = ref_vel[0, ::_ps], ref_vel[1, ::_ps], ref_vel[2, ::_ps]
-            _er_p  = _rr_p - _r_p
-            _eth_p = np.arctan2(np.sin(_thr_p - _th_p), np.cos(_thr_p - _th_p))
-            _ez_p  = _zr_p - _z_p
+            _rr_p  = Ref_log[0, ::_ps];     _thr_p = Ref_log[1, ::_ps];     _zr_p = Ref_log[2, ::_ps]
+            _vrr   = Ref_vel_log[0, ::_ps]; _vthr  = Ref_vel_log[1, ::_ps]; _vzr  = Ref_vel_log[2, ::_ps]
 
         gc = (0.85, 0.95, 0.85)
         def shade_gusts(ax):
@@ -1146,23 +1094,7 @@ def run_sim(overrides=None, show_plots=True):
         for ax in fig2.axes: ax.tick_params(labelbottom=True)
         fig2.tight_layout()
 
-        # fig 2b: cylindrical tracking errors
-        if _USE_CYL_REF:
-            fig2b, axes2b = plt.subplots(3, 2, figsize=(13, 8), sharex=True)
-            fig2b.suptitle(f"UW Cylindrical Tracking Errors  [{TRAJ_MODE}]", fontsize=13)
-            _evr_p = _vrr - _vr_p;  _evth_p = _vthr - _vth_p;  _evz_p = _vzr - _vz_p
-            pe_data = [(_er_p,'e_r  [m]'), (_eth_p,'e_theta  [rad]'), (_ez_p,'e_z  [m]')]
-            ve_data = [(_evr_p,'e_vr  [m/s]'), (_evth_p,'e_vtheta  [rad/s]'), (_evz_p,'e_vz  [m/s]')]
-            for i, ((pe, pl), (ve, vl)) in enumerate(zip(pe_data, ve_data)):
-                ax = axes2b[i, 0];  ax.plot(t_p, pe, 'b', lw=1.6)
-                ax.axhline(0, color='k', ls=':', lw=0.8);  ax.set_ylabel(pl);  ax.grid(True);  shade_gusts(ax)
-                if i == 0: ax.set_title("Position error")
-                ax = axes2b[i, 1];  ax.plot(t_p, ve, 'darkorange', lw=1.6)
-                ax.axhline(0, color='k', ls=':', lw=0.8);  ax.set_ylabel(vl);  ax.grid(True);  shade_gusts(ax)
-                if i == 0: ax.set_title("Velocity error")
-            axes2b[2, 0].set_xlabel("Time  [s]");  axes2b[2, 1].set_xlabel("Time  [s]")
-            for ax in fig2b.axes: ax.tick_params(labelbottom=True)
-            fig2b.tight_layout()
+        # error figure placeholder — to be defined
 
         # fig 3: virtual wrench
         fig3, axes3 = plt.subplots(3, 2, figsize=(12, 9), sharex=True)
