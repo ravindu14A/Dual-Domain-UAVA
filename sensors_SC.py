@@ -84,7 +84,7 @@ class IMUSensor(_DiscreteSensor):
       mag_body   (3,) -- magnetometer (reference field = ENU +x = East)     [Gauss]
     """
 
-    update_rate = 200.0   # [Hz]
+    update_rate = 400.0   # [Hz]
 
     sigma_accel = 0.05    # [m/s²]   white noise 1-sigma per sample
     sigma_gyro  = 0.002   # [rad/s]  white noise 1-sigma per sample
@@ -136,7 +136,7 @@ class GNSSSensor(_DiscreteSensor):
     Outputs: gnss_pos (3,) [m], gnss_vel (3,) [m/s]
     """
 
-    update_rate = 50.0     # [Hz]
+    update_rate = 10.0     # [Hz]
     sigma_pos   = 0.5     # [m]
     sigma_vel   = 0.1     # [m/s]
 
@@ -239,7 +239,7 @@ class AHRSSensor(_DiscreteSensor):
     Output: (3,)       -- noisy euler angles      [rad]
     """
 
-    update_rate  = 100.0                  # [Hz]
+    update_rate  = 400.0                  # [Hz]
     sigma_phi    = np.radians(0.5)        # [rad]  roll  1-sigma  (~0.5°)
     sigma_theta  = np.radians(0.5)        # [rad]  pitch 1-sigma  (~0.5°)
     sigma_psi    = np.radians(1.0)        # [rad]  heading 1-sigma (~1°)
