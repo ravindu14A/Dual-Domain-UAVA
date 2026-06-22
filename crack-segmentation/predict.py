@@ -57,8 +57,8 @@ def main():
         return
 
     # Try to set webcam resolution
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
 
     prev_time = time.time()
 
@@ -67,7 +67,7 @@ def main():
         if not ret:
             break
 
-        results = model(frame, verbose=False, device="mps", conf=0.65, imgsz=640)[0]
+        results = model(frame, verbose=False, device="mps", conf=0.65, imgsz=3840)[0]
 
         now = time.time()
         fps = 1.0 / (now - prev_time)
